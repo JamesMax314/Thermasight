@@ -16,8 +16,9 @@ the next phase until its predecessor's gate passes.
 - [x] DEM read/write with NaN nodata convention.
 - [x] CLI entrypoint plumbing (`python -m thermal_model`).
 - [x] Test harness with synthetic-DEM fixture and round-trip test.
-- [ ] CI workflow (lint + tests on a conda-forge environment).
-- [ ] First real LIDAR fixture under `data/fixtures/`.
+- [x] CI workflow (lint + tests on a conda-forge environment).
+- [x] First real LIDAR fixture under `data/fixtures/`
+  (`wild_boar_fell_east_256_1m.tif`, EA Composite 2022 1 m).
 
 **Gate**: `pytest`, `ruff check`, and `mypy thermal_model` all pass in CI.
 
