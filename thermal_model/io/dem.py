@@ -45,7 +45,8 @@ class DEM:
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.elevation_m.shape  # type: ignore[return-value]
+        rows, cols = self.elevation_m.shape
+        return rows, cols
 
 
 def read_dem(path: str | Path) -> DEM:
