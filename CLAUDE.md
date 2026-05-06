@@ -309,6 +309,7 @@ validation gate, even if it seems easy.
   `feat: add location selector to nav bar`
   `fix: correct refrigerant GWP calculation for R404A`
   `test: add unit tests for commuting tCO2e formula`
-- Always run `npm run lint` and `npm run test` before committing
-- Never commit with failing tests or lint errors
+- Always run `ruff check .`, `ruff format --check .`, `mypy thermal_model`,
+  and `pytest` before committing. All four must pass.
+- Never commit with failing tests, lint errors, format diffs, or type errors
 - Write a meaningful commit message — not "wip" or "update"

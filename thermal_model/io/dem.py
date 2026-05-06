@@ -57,9 +57,7 @@ def read_dem(path: str | Path) -> DEM:
     path = Path(path)
     with rasterio.open(path) as src:
         if src.count != 1:
-            raise ValueError(
-                f"{path}: expected single-band DEM, got {src.count} bands"
-            )
+            raise ValueError(f"{path}: expected single-band DEM, got {src.count} bands")
         elevation = src.read(1, masked=False).astype(np.float64, copy=True)
         nodata = src.nodata
         if nodata is not None:
