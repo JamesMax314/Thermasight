@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "thermal-model"
+version = "0.0.0"
+description = "Predict paragliding thermal sources and trigger points from LIDAR DEMs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "James Maxwell" }]
+# Runtime dependencies are managed by conda (see environment.yml).
+# This list is intentionally empty: the geospatial stack ships C/C++
+# extensions that conda-forge handles cleanly and pip does not.
+dependencies = []
+
+[project.scripts]
+thermal-model = "thermal_model.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["thermal_model"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B"]
+
+[tool.ruff.format]
+# Match black defaults.
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["thermal_model"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# Third-party libs without complete type stubs.
+module = ["rasterio.*", "richdem.*", "pvlib.*", "simplekml.*", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

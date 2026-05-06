@@ -1,0 +1,31 @@
+name: thermals
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  # Core numerics
+  - numpy
+  - scipy
+  # Geospatial I/O and CRS — conda-forge handles the C/C++ stack cleanly.
+  - rasterio
+  - pyproj
+  - shapely
+  - fiona
+  # Hydrology / flow accumulation. Use D∞ in production code.
+  - richdem
+  # Solar position and clear-sky irradiance.
+  - pvlib-python
+  # Plotting (diagnostics only).
+  - matplotlib-base
+  # KMZ export.
+  - simplekml
+  # Dev tools.
+  - pytest
+  - hypothesis
+  - ruff
+  - mypy
+  - pip
+  - pip:
+      # Editable install of this package.
+      - -e .
