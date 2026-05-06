@@ -46,3 +46,20 @@ def synthetic_dem_path(tmp_path: Path) -> Path:
     ) as dst:
         dst.write(raw, 1)
     return path
+
+
+@pytest.fixture
+def wild_boar_fell_fixture_path() -> Path:
+    """Path to the 256×256 1 m DTM fixture over Wild Boar Fell's east edge.
+
+    Crop from the Environment Agency LIDAR Composite (2022, 1 m), centred
+    on (376050, 498700) BNG — the convex break at the lip of the plateau
+    above the Mallerstang scarp. Used to validate the I/O pipeline against
+    real terrain rather than purely synthetic data.
+    """
+    return (
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "fixtures"
+        / "wild_boar_fell_east_256_1m.tif"
+    )

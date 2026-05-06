@@ -36,3 +36,18 @@ def test_write_raster_like_round_trips(
     mask = np.isfinite(a) & np.isfinite(b)
     np.testing.assert_allclose(a[mask], b[mask], rtol=0, atol=1e-3)
     assert np.isnan(b[0, 0])
+
+
+def test_read_dem_real_lidar_fixture(wild_boar_fell_fixture_path: Path) -> None:
+    dem = read_dem(wild_boar_fell_fixture_path)
+    assert dem.shape == (256, 256)
+    assert dem.cell_size_m == 1.0
+    assert dem.crs is not None and dem.crs.to_epsg() == 27700
+
+    finite = dem.elevation_m[np.isfinite(dem.elevation_m)]
+    # Wild Boar Fell summit is 708 m; the surrounding plateau and east
+    # scarp sit roughly 600–710 m. Allow some slack for nearby drops.
+    assert 500.0 < finite.min() < 700.0
+    assert 690.0 < finite.max() < 720.0
+    # The window straddles the plateau lip, so meaningful relief is required.
+    assert finite.max() - finite.min() > 30.0
