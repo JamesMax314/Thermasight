@@ -17,6 +17,26 @@ pip install -e .
 pytest
 ```
 
+## Preview a tile
+
+The `preview` subcommand renders a hillshade-backed diagnostic plot of a DEM.
+Useful for sanity-checking the convergence map and morphometric fields against
+real terrain.
+
+```bash
+# Open a window with the convergence overlay (the headline diagnostic)
+python -m thermal_model preview --dem data/fixtures/wild_boar_fell_east_256_1m.tif
+
+# Pick a single view: convergence | slope | aspect | curvature | all
+python -m thermal_model preview --dem <path> --what slope
+
+# Save a 2×2 panel to a PNG instead of opening a window
+python -m thermal_model preview --dem <path> --what all --save out.png --dpi 150
+```
+
+`python -m thermal_model preview --help` lists all options.
+
 ## Status
 
-Phase 0 (repo skeleton + I/O). See `docs/ROADMAP.md` for the phased plan.
+Phase 1 (terrain morphometrics + inverted-DEM convergence). See
+`docs/ROADMAP.md` for the phased plan.

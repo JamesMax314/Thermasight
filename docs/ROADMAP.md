@@ -36,6 +36,9 @@ the next phase until its predecessor's gate passes.
   and `plot_convergence` / `plot_slope` / `plot_aspect` /
   `plot_profile_curvature` for sanity checks. Phase 2 will introduce a
   separate, physical hillshade in `solar/` for cast-shadow analysis).
+  Drivable from the CLI via `python -m thermal_model preview` (pulled
+  forward from Phase 3 since the diagnostic plots are not useful
+  without a way to run them on a tile).
 - [ ] Property tests: rotation/scaling invariants.
 
 **Gate**: convergence raster agrees with `docs/VALIDATION.md` on three
@@ -53,7 +56,9 @@ independent test tiles. Document the comparison in `docs/VALIDATION.md`.
 - [ ] Single-vector drift via sub-pixel `ndimage.shift`.
 - [ ] Profile-curvature trigger detector + DBSCAN clustering.
 - [ ] GeoTIFF + KMZ export of trigger points.
-- [ ] CLI subcommands: `run`, `preview`.
+- [x] CLI subcommand: `preview` (pulled forward to Phase 1 alongside
+  the diagnostic plots).
+- [ ] CLI subcommand: `run`.
 
 ## Phase 4 — Land cover + time-of-day
 
