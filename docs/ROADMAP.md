@@ -44,7 +44,16 @@ the next phase until its predecessor's gate passes.
   Drivable from the CLI via `python -m thermal_model preview` (pulled
   forward from Phase 3 since the diagnostic plots are not useful
   without a way to run them on a tile).
-- [ ] Property tests: rotation/scaling invariants.
+- [x] Property tests: rotation/scaling invariants. Hypothesis-based
+  tests in `test_terrain_morphometry.py` and `test_physics_flow.py`
+  pin: slope/aspect/curvature equivariance under `np.rot90`,
+  `tan(slope) * k = tan(slope_at_cell*k_scale)` cell-size scaling,
+  D∞ direction angle gains `k*pi/2` per CCW turn (math convention)
+  with slopes invariant, D∞ slope magnitudes scale `1/k`, and the
+  D∞ flow-accumulation field is exactly equivariant under 90° rotation
+  and exactly invariant under cell-size scaling (the eight facets
+  are rotationally symmetric and accumulation in default cell-count
+  mode is dimensionless).
 - [x] DEM mosaic pipeline (`thermal_model/io/mosaic.py`: `mosaic_dems()`
   wrapping `rasterio.merge.merge` with project on-disk conventions:
   `nodata=-9999`, deflate-compressed tiled float32. Validates CRS and

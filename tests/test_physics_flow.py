@@ -6,6 +6,9 @@ import importlib.util
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from hypothesis.extra import numpy as hnp
 
 from thermal_model.physics import dinf_flow_directions, flow_accumulation
 from thermal_model.physics.flow import _flow_accumulation_numpy
@@ -242,3 +245,107 @@ def test_richdem_path_runs_and_agrees_in_broad_strokes() -> None:
     sum_np = float(np.nansum(acc_np))
     sum_rd = float(np.nansum(acc_rd))
     assert sum_rd == pytest.approx(sum_np, rel=0.2)
+
+
+# ---------------------------------------------------------------------------
+# Property-based: rotation equivariance and cell-size scaling
+# ---------------------------------------------------------------------------
+
+
+def _angular_diff(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Smallest unsigned angular distance between two angles in radians."""
+    delta = (a - b) % (2.0 * np.pi)
+    return np.minimum(delta, 2.0 * np.pi - delta)
+
+
+# Use a tilted random DEM so flow direction selection has no ties:
+# overlay a small unique-per-cell tilt on a random base. This avoids
+# argmax tie-breaking ambiguity that would otherwise spoil exact
+# rotation equivariance.
+def _tilted_random_dem(seed: int, shape: tuple[int, int] = (7, 7)) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    base = rng.uniform(-10.0, 10.0, size=shape)
+    yy, xx = np.indices(shape).astype(np.float64)
+    return base + 100.0 * yy + 100.0 * xx
+
+
+_PROPERTY_DEM = hnp.arrays(
+    dtype=np.float64,
+    shape=(7, 7),
+    elements=st.floats(
+        min_value=-50.0,
+        max_value=50.0,
+        allow_nan=False,
+        allow_infinity=False,
+    ),
+)
+
+
+@given(seed=st.integers(min_value=0, max_value=9999), k=st.integers(0, 3))
+@settings(max_examples=30, deadline=None)
+def test_dinf_directions_rotate_under_rot90(seed: int, k: int) -> None:
+    # In math convention (CCW from east), np.rot90 rotates the
+    # array CCW so every flow direction also rotates CCW: angle
+    # gains k*pi/2.
+    dem = _tilted_random_dem(seed)
+    angle_orig, slope_orig = dinf_flow_directions(dem, cell_size_m=1.0)
+    angle_rot, slope_rot = dinf_flow_directions(np.rot90(dem, k=k), cell_size_m=1.0)
+
+    expected_angle = (np.rot90(angle_orig, k=k) + k * (np.pi / 2)) % (2.0 * np.pi)
+    expected_slope = np.rot90(slope_orig, k=k)
+    mask = np.isfinite(angle_rot) & np.isfinite(expected_angle)
+    diffs = _angular_diff(angle_rot, expected_angle)
+    assert np.all(diffs[mask] < 1e-9)
+    np.testing.assert_allclose(slope_rot[mask], expected_slope[mask], atol=1e-12)
+
+
+@given(
+    seed=st.integers(min_value=0, max_value=9999),
+    scale=st.floats(min_value=0.5, max_value=10.0, allow_nan=False),
+)
+@settings(max_examples=30, deadline=None)
+def test_dinf_slopes_scale_inversely_with_cell_size(seed: int, scale: float) -> None:
+    # Steepest-facet slope is a tangent (m of rise per m of run);
+    # scaling cell_size_m by k while keeping the array fixed scales
+    # the run by k and so the tangent by 1/k. Direction is invariant.
+    dem = _tilted_random_dem(seed)
+    angle_a, slope_a = dinf_flow_directions(dem, cell_size_m=1.0)
+    angle_b, slope_b = dinf_flow_directions(dem, cell_size_m=scale)
+    mask = np.isfinite(slope_a) & np.isfinite(slope_b)
+    np.testing.assert_allclose(
+        slope_b[mask], slope_a[mask] / scale, rtol=1e-9, atol=1e-12
+    )
+    diffs = _angular_diff(angle_b, angle_a)
+    assert np.all(diffs[mask] < 1e-9)
+
+
+@given(seed=st.integers(min_value=0, max_value=9999), k=st.integers(0, 3))
+@settings(max_examples=20, deadline=None)
+def test_flow_accumulation_equivariant_under_rot90(seed: int, k: int) -> None:
+    # The eight D-infinity facets are rotationally symmetric: a 90 deg
+    # rotation of the input maps each facet to another facet without
+    # changing slopes. Combined with our deterministic argmax
+    # tie-breaking, that should make accumulation exactly equivariant.
+    dem = _tilted_random_dem(seed)
+    acc_orig = flow_accumulation(dem, cell_size_m=1.0, use_richdem=False)
+    acc_rot = flow_accumulation(np.rot90(dem, k=k), cell_size_m=1.0, use_richdem=False)
+    expected = np.rot90(acc_orig, k=k)
+    np.testing.assert_allclose(acc_rot, expected, atol=1e-9)
+
+
+@given(
+    seed=st.integers(min_value=0, max_value=9999),
+    scale=st.floats(min_value=0.5, max_value=10.0, allow_nan=False),
+)
+@settings(max_examples=20, deadline=None)
+def test_flow_accumulation_invariant_under_cell_size_scaling(
+    seed: int, scale: float
+) -> None:
+    # Default flow_accumulation returns upstream cell count, which is
+    # dimensionless; cell-size scaling affects only the slope
+    # magnitudes used for facet selection (proportionally), not the
+    # selected facet itself. So accumulation must be unchanged.
+    dem = _tilted_random_dem(seed)
+    acc_a = flow_accumulation(dem, cell_size_m=1.0, use_richdem=False)
+    acc_b = flow_accumulation(dem, cell_size_m=scale, use_richdem=False)
+    np.testing.assert_allclose(acc_a, acc_b, atol=1e-9)

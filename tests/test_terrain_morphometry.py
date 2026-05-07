@@ -7,6 +7,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from hypothesis.extra import numpy as hnp
 
 from thermal_model.io import read_dem
 from thermal_model.terrain import aspect, profile_curvature, slope
@@ -268,3 +271,116 @@ def test_morphometrics_on_real_fixture(wild_boar_fell_fixture_path: Path) -> Non
     # Curvature values on real terrain at 1 m resolution are tiny but
     # should straddle zero meaningfully.
     assert finite_k.min() < 0.0 < finite_k.max()
+
+
+# ---------------------------------------------------------------------------
+# Property-based: rotation invariance and cell-size scaling
+# ---------------------------------------------------------------------------
+#
+# These tests pin geometric invariants that a correct morphometric
+# implementation must satisfy. They use hypothesis to vary the DEM
+# values over a small grid and check that the relationship holds for
+# every example. The grid size is intentionally small (7x7) so each
+# example is sub-millisecond.
+
+
+_PROPERTY_DEM = hnp.arrays(
+    dtype=np.float64,
+    shape=(7, 7),
+    elements=st.floats(
+        min_value=-50.0,
+        max_value=50.0,
+        allow_nan=False,
+        allow_infinity=False,
+    ),
+)
+
+
+def _angular_diff(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Smallest unsigned angular distance between two angles in radians."""
+    delta = (a - b) % (2.0 * np.pi)
+    return np.minimum(delta, 2.0 * np.pi - delta)
+
+
+@given(dem=_PROPERTY_DEM, k=st.integers(min_value=0, max_value=3))
+@settings(max_examples=30, deadline=None)
+def test_slope_invariant_under_rot90(dem: np.ndarray, k: int) -> None:
+    sl_orig = slope(dem, cell_size_m=1.0)
+    sl_rot = slope(np.rot90(dem, k=k), cell_size_m=1.0)
+    expected = np.rot90(sl_orig, k=k)
+    mask = np.isfinite(sl_rot) & np.isfinite(expected)
+    np.testing.assert_allclose(sl_rot[mask], expected[mask], atol=1e-12)
+
+
+@given(
+    dem=_PROPERTY_DEM,
+    scale=st.floats(min_value=0.5, max_value=10.0, allow_nan=False),
+)
+@settings(max_examples=30, deadline=None)
+def test_tan_slope_scales_inversely_with_cell_size(
+    dem: np.ndarray, scale: float
+) -> None:
+    # Scaling cell_size_m by k while keeping DEM values fixed scales
+    # the gradient magnitude by 1/k, so tan(slope) scales by 1/k too.
+    cell = 1.0
+    sl_a = slope(dem, cell_size_m=cell)
+    sl_b = slope(dem, cell_size_m=cell * scale)
+    mask = np.isfinite(sl_a) & np.isfinite(sl_b)
+    np.testing.assert_allclose(
+        np.tan(sl_b[mask]),
+        np.tan(sl_a[mask]) / scale,
+        rtol=1e-9,
+        atol=1e-12,
+    )
+
+
+@given(dem=_PROPERTY_DEM, k=st.integers(min_value=0, max_value=3))
+@settings(max_examples=30, deadline=None)
+def test_aspect_rotates_under_rot90(dem: np.ndarray, k: int) -> None:
+    # np.rot90 rotates the array 90 deg CCW, which rotates every
+    # compass direction CCW by the same amount. In compass-bearing
+    # convention (0=N, increasing clockwise), CCW rotation subtracts
+    # k*pi/2.
+    asp_orig = aspect(dem, cell_size_m=1.0)
+    asp_rot = aspect(np.rot90(dem, k=k), cell_size_m=1.0)
+    expected = (np.rot90(asp_orig, k=k) - k * np.pi / 2) % (2.0 * np.pi)
+    mask = np.isfinite(asp_rot) & np.isfinite(expected)
+    diffs = _angular_diff(asp_rot, expected)
+    assert np.all(diffs[mask] < 1e-9)
+
+
+@given(
+    dem=_PROPERTY_DEM,
+    scale=st.floats(min_value=0.5, max_value=10.0, allow_nan=False),
+)
+@settings(max_examples=30, deadline=None)
+def test_aspect_invariant_under_cell_size_scaling(
+    dem: np.ndarray, scale: float
+) -> None:
+    # Aspect is a direction; the cell-size factor cancels.
+    asp_a = aspect(dem, cell_size_m=1.0)
+    asp_b = aspect(dem, cell_size_m=scale)
+    mask = np.isfinite(asp_a) & np.isfinite(asp_b)
+    diffs = _angular_diff(asp_a, asp_b)
+    assert np.all(diffs[mask] < 1e-9)
+
+
+@given(dem=_PROPERTY_DEM, k=st.integers(min_value=0, max_value=3))
+@settings(max_examples=30, deadline=None)
+def test_profile_curvature_invariant_under_rot90(dem: np.ndarray, k: int) -> None:
+    kc_orig = profile_curvature(dem, cell_size_m=1.0)
+    kc_rot = profile_curvature(np.rot90(dem, k=k), cell_size_m=1.0)
+    expected = np.rot90(kc_orig, k=k)
+    mask = np.isfinite(kc_rot) & np.isfinite(expected)
+    np.testing.assert_allclose(kc_rot[mask], expected[mask], atol=1e-9)
+
+
+# Profile curvature does NOT scale cleanly as 1/k^2 under cell-size
+# scaling because of the (1 + |grad|^2)^1.5 surface-area correction
+# in the Zevenbergen-Thorne formula; it only scales that way in the
+# small-slope limit. The fixed-DEM
+# test_profile_curvature_scales_with_inverse_cell_size above checks
+# the right-level invariant (sign agreement on a Gaussian hill across
+# cell sizes); a hypothesis property at full resolution would either
+# require artificially flat DEMs or a much looser tolerance, neither
+# of which adds confidence.
