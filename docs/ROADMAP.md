@@ -1,9 +1,13 @@
 # Roadmap
 
-**Current phase: Phase 2 — solar + heating.**
+**Current phase: Phase 3 — wind tilt + ground-level triggers.**
 
-Update this header when a phase completes. Do not skip phases. Do not start
-the next phase until its predecessor's gate passes.
+Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
+on the same date — the original "wind drift" framing has been
+superseded by the ground-level trigger-prediction model in
+`docs/model_correction.md`. Update this header when a phase completes.
+Do not skip phases. Do not start the next phase until its
+predecessor's gate passes.
 
 ---
 
@@ -151,14 +155,76 @@ the Phase 1 convergence layer is wrong.
   is meaningless in absolute terms; display on a percentile
   scale).
 
-## Phase 3 — Wind drift + triggers
+## Phase 3 — Wind tilt + ground-level triggers
 
-- [ ] Single-vector drift via sub-pixel `ndimage.shift`.
-- [ ] Profile-curvature trigger detector + DBSCAN clustering.
-- [ ] GeoTIFF + KMZ export of trigger points.
+**Reformulated 2026-05-07** — the original "wind drift" framing was
+solving the wrong problem (it predicted where airborne thermals end
+up, not where they source from the ground). See
+`docs/model_correction.md` for the full corrected formulation; this
+section tracks the implementation tasks that follow from it.
+
+The model predicts ground-level trigger locations. Wind enters the
+pipeline as a *terrain tilt before inversion*, biasing the inverted-
+DEM flow accumulation toward the lee side of features. There is no
+in-air drift step in the main pipeline.
+
+- [ ] `physics/wind_tilt.py` — `wind_tilt_ramp(dem, cell_size_m,
+  wind_from_deg, wind_speed_ms, k)` returning the tilted DEM. Pure
+  numpy; cell-size aware; documents the sign convention against
+  cardinal-wind cases (N→S, S→N, W→E, E→W, SW→NE).
+- [ ] `physics/pipeline.py` — `run_model(...)` orchestrating the full
+  §6-of-`model_correction.md` block: smooth → tilt → invert → fill →
+  D∞ accum → heating from raw DEM → normalise both → geometric mean
+  → multiply by max(profile_curv, 0) → multiply by min-slope mask
+  (~2.5°). Returns the trigger-potential raster and intermediate
+  diagnostics.
+- [ ] Trigger-point clustering on the trigger-potential raster.
+  Connected components (`scipy.ndimage.label`) on a high-percentile
+  mask, ranked by mean strength, with a min-cluster-cells filter.
+  (`scikit-learn` DBSCAN is *not* added — connected components is
+  the equivalent operation on a regular raster and avoids the dep
+  per `CLAUDE.md` §4.)
+- [ ] GeoTIFF + KMZ export of trigger points (`simplekml`,
+  reprojection to WGS84 from the DEM CRS).
 - [x] CLI subcommand: `preview` (pulled forward to Phase 1 alongside
   the diagnostic plots).
-- [ ] CLI subcommand: `run`.
+- [ ] CLI subcommand: `run` — wires the full pipeline. Args:
+  `--dem`, `--datetime`, `--wind-from`, `--wind-speed`,
+  `--wind-tilt-k` (default 0.03), `--out` (trigger GeoTIFF),
+  `--kmz` (trigger points). The deprecated `--release-height` and
+  `--climb-rate` are *not* added.
+- [ ] Diagnostic plotter `viz.plot_trigger_potential` and a
+  `preview --what trigger` CLI hook.
+
+### Quarantined / removed
+
+The previous `physics/drift.py` and the `drift_field()` /
+`drift_distance_m` API are removed from the main pipeline. If
+post-detachment in-air drift is ever needed (e.g. for XC track
+correlation) it lives in a separately-named utility module under
+`thermal_model/utils/` with a docstring stating it is *not* part of
+the trigger-prediction pipeline. Operator approval required before
+reintroducing.
+
+### Validation
+
+After implementation, the trigger raster on the Wild Boar Fell +
+Mallerstang mosaic for a typical SW summer afternoon (5–8 m/s from
+210–240°, 1200–1400 BST) should show:
+
+* SW-facing lower flanks of Wild Boar Fell bright (sun + convergence
+  + convex spurs).
+* Lee-side (NE) enhancement of the main E-facing scarp relative to a
+  zero-wind baseline (the tilt's principal observable).
+* Mallerstang Edge cliff line lit by curvature × moderate energy
+  even where plan convergence is laminar.
+* Flat summit plateau dark (slope mask + low convergence after
+  smoothing).
+* Valley floors suppressed (slope mask).
+
+If the NE side of Wild Boar Fell does not enhance under SW wind
+relative to the zero-wind baseline, the tilt has the wrong sign;
+re-check the ramp formula (`docs/model_correction.md` §4).
 
 ## Phase 4 — Land cover + time-of-day
 
@@ -168,6 +234,12 @@ the Phase 1 convergence layer is wrong.
 
 ## Phase 5 — Real physics
 
-- [ ] WindNinja-driven terrain-aware wind field.
-- [ ] Lagrangian plume model replacing the hydrological analogy.
-- [ ] Comparison with Phase 1 convergence map as the validation step.
+- [ ] WindNinja-driven terrain-aware wind field, replacing the
+  empirical wind-tilt coefficient `k`. The wind field itself encodes
+  the boundary-layer flow distortion that the linear ramp
+  approximates.
+- [ ] Lagrangian plume model running alongside the (tilted) inverted-
+  DEM hydrological analogy, for cross-validation rather than
+  replacement.
+- [ ] Comparison of the two convergence maps and the trigger raster
+  against `docs/VALIDATION.md` as the joint validation step.
