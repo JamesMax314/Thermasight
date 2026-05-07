@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current phase: Phase 1 — terrain morphometrics + inverted-DEM convergence.**
+**Current phase: Phase 2 — solar + heating.**
 
 Update this header when a phase completes. Do not skip phases. Do not start
 the next phase until its predecessor's gate passes.
@@ -80,6 +80,14 @@ the next phase until its predecessor's gate passes.
 
 **Gate**: convergence raster agrees with `docs/VALIDATION.md` on three
 independent test tiles. Document the comparison in `docs/VALIDATION.md`.
+
+**Gate status (2026-05-07): cleared informally.** Operator visually
+confirmed agreement with most known thermal triggers across the
+Wild Boar Fell + Mallerstang 15 km × 20 km mosaic; see
+`docs/VALIDATION.md` § Validation log. This is a single-tile
+qualitative pass rather than the originally-specified three-tile
+formal gate. Revisit the gate if Phase 2 or Phase 3 results suggest
+the Phase 1 convergence layer is wrong.
 
 ## Phase 2 — Solar + heating
 
