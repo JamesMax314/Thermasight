@@ -17,6 +17,43 @@ pip install -e .
 pytest
 ```
 
+## Mosaic LIDAR tiles
+
+EA LIDAR Composite ships as 5 km × 5 km blocks; for whole-hill convergence
+analysis, stitch a set of adjacent blocks into a single mosaic. Inputs must
+share a CRS and cell size.
+
+```bash
+# Mosaic the 12 Wild Boar / Mallerstang tiles (15 km × 20 km, 1 m, ~600 MB)
+python -m thermal_model mosaic \
+  --inputs data/raw/*/*.tif \
+  --output data/processed/mallerstang_wildboar_1m.tif
+```
+
+Output is deflate-compressed float32 with `nodata=-9999`. Pass `--overwrite`
+to replace an existing output. `python -m thermal_model mosaic --help` lists
+all options.
+
+## Preview a tile
+
+The `preview` subcommand renders a hillshade-backed diagnostic plot of a DEM.
+Useful for sanity-checking the convergence map and morphometric fields against
+real terrain.
+
+```bash
+# Open a window with the convergence overlay (the headline diagnostic)
+python -m thermal_model preview --dem data/fixtures/wild_boar_fell_east_256_1m.tif
+
+# Pick a single view: convergence | slope | aspect | curvature | all
+python -m thermal_model preview --dem <path> --what slope
+
+# Save a 2×2 panel to a PNG instead of opening a window
+python -m thermal_model preview --dem <path> --what all --save out.png --dpi 150
+```
+
+`python -m thermal_model preview --help` lists all options.
+
 ## Status
 
-Phase 0 (repo skeleton + I/O). See `docs/ROADMAP.md` for the phased plan.
+Phase 1 (terrain morphometrics + inverted-DEM convergence). See
+`docs/ROADMAP.md` for the phased plan.
