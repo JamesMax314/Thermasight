@@ -24,8 +24,8 @@ the next phase until its predecessor's gate passes.
 
 ## Phase 1 — Terrain morphometrics + inverted-DEM convergence
 
-- [ ] Slope, aspect, and profile curvature (Horn's method).
-- [ ] Pit-fill on inverted DEM.
+- [x] Slope, aspect, and profile curvature (Horn / Zevenbergen & Thorne).
+- [x] Pit-fill on inverted DEM (priority-flood, Barnes et al. 2014).
 - [ ] D∞ flow accumulation via `richdem` with a numpy fallback.
 - [ ] Diagnostic plots overlaid on hillshade.
 - [ ] Property tests: rotation/scaling invariants.
