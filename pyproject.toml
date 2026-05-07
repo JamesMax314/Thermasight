@@ -42,7 +42,7 @@ ignore_errors = true
 
 [[tool.mypy.overrides]]
 # Third-party libs without complete type stubs.
-module = ["rasterio.*", "richdem.*", "pvlib.*", "simplekml.*", "scipy.*"]
+module = ["rasterio.*", "richdem.*", "pvlib.*", "simplekml.*", "scipy.*", "pandas.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

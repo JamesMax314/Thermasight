@@ -1,0 +1,31 @@
+"""Visualization helpers: hillshade and diagnostic matplotlib plotters.
+
+Plotting code lives here and is never imported back into ``physics`` or
+``terrain``. Anything in this package is a *diagnostic*; the project's
+deliverables are GeoTIFF and KMZ exports, not figures.
+
+The Phase 1 :func:`hillshade` is a Lambertian shading function for
+visualization only. The Phase 2 solar pipeline will introduce a
+separate, physical hillshade (with cast shadows from a horizon scan)
+under ``thermal_model.solar``; the two are intentionally distinct.
+"""
+
+from thermal_model.viz.diagnostics import (
+    plot_aspect,
+    plot_convergence,
+    plot_heating,
+    plot_overlay,
+    plot_profile_curvature,
+    plot_slope,
+)
+from thermal_model.viz.hillshade import hillshade
+
+__all__ = [
+    "hillshade",
+    "plot_aspect",
+    "plot_convergence",
+    "plot_heating",
+    "plot_overlay",
+    "plot_profile_curvature",
+    "plot_slope",
+]

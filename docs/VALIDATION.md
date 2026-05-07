@@ -32,3 +32,29 @@ Each entry is one row in the table below:
 
 When a row's confidence is upgraded to `high`, record the source (flight
 date, XContest track URL, etc.) in a comment alongside the row.
+
+## Validation log
+
+### 2026-05-07 — Wild Boar Fell + Mallerstang (informal gate clearance)
+
+The 15 km × 20 km mosaic
+(`data/processed/mallerstang_wildboar_1m.tif`, twelve 5 km EA LIDAR
+blocks tiling BNG `[370000, 385000] × [490000, 510000]`) was rendered
+at 2 m via `python -m thermal_model preview --what convergence` (with
+the default Gaussian-smoothed pipeline). The operator (an experienced
+paraglider familiar with the area) confirmed by visual inspection
+that **most** known thermal triggers across Wild Boar Fell, Hugh
+Seat, the Mallerstang scarp, and the surrounding edges appear as
+bright lineaments or hot spots in the convergence overlay. A
+minority of known triggers do not appear; the likely explanation is
+wind drift between heat source and release point, which is a Phase 3
+concern (the Phase 1 model has no wind, no sun position, no aspect
+weighting).
+
+**Caveat**: this is a single-mosaic, qualitative clearance — *not*
+the formal "three independent test tiles" gate originally specified
+in `CLAUDE.md §10`. The Phase 1 core ("rising air ≡ flow on inverted
+DEM") is taken to be sound enough to begin Phase 2. The formal
+three-tile gate (Pen-y-ghent / Ingleborough / Malham) should be
+revisited if Phase 2 or Phase 3 results suggest the convergence base
+layer is mismodelled.

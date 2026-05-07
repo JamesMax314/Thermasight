@@ -299,6 +299,8 @@ High level:
 Do not skip phases. Do not start phase 2 until phase 1 has passed its
 validation gate, even if it seems easy.
 
+Any additional features and the details of implimentation should be recoreded in Roadmap before each commit.
+
 ## Git workflow
 
 - Never commit directly to `main` or `develop`
