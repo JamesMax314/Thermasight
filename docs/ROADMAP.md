@@ -26,6 +26,11 @@ the next phase until its predecessor's gate passes.
 
 - [x] Slope, aspect, and profile curvature (Horn / Zevenbergen & Thorne).
 - [x] Pit-fill on inverted DEM (priority-flood, Barnes et al. 2014).
+  Now backed by a richdem C++ implementation in addition to the
+  numpy reference; auto-selected via `use_richdem` (mirroring the
+  `flow_accumulation` pattern). richdem is ~100x faster on large
+  rasters; without it the pure-Python heap stays as the offline
+  fallback and as the test reference.
 - [x] D∞ flow accumulation via `richdem` with a numpy fallback
   (`thermal_model/physics/flow.py`: `dinf_flow_directions` and
   `flow_accumulation`; Tarboton 1997, eight-facet selection,

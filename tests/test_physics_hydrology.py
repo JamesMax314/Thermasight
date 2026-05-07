@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import math
 
 import numpy as np
 import pytest
 
 from thermal_model.physics import fill_pits
+
+_HAS_RICHDEM = importlib.util.find_spec("richdem") is not None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,13 +53,13 @@ def test_no_op_on_descending_plane() -> None:
     # boundary, so fill_pits is a no-op.
     cols = np.arange(8.0)
     plane = np.broadcast_to(5.0 - cols, (8, 8)).copy()
-    out = fill_pits(plane)
+    out = fill_pits(plane, use_richdem=False)
     np.testing.assert_array_equal(out, plane)
 
 
 def test_no_op_on_gaussian_hill() -> None:
     hill = _gaussian_hill(17, cell=1.0)
-    out = fill_pits(hill)
+    out = fill_pits(hill, use_richdem=False)
     np.testing.assert_allclose(out, hill, atol=1e-12)
 
 
@@ -67,7 +70,7 @@ def test_filled_is_never_below_input() -> None:
     dem[5, 5] = -50
     dem[12, 8] = -30
     dem[3, 17] = -10
-    out = fill_pits(dem)
+    out = fill_pits(dem, use_richdem=False)
     assert np.all(out >= dem - 1e-12)
 
 
@@ -78,7 +81,7 @@ def test_no_strict_pits_remain() -> None:
     dem[15, 15] = -50
     dem[20, 5] = -10
     assert _has_strict_pit(dem)
-    out = fill_pits(dem)
+    out = fill_pits(dem, use_richdem=False)
     assert not _has_strict_pit(out)
 
 
@@ -91,7 +94,7 @@ def test_isolated_pit_in_descending_plane_fills_to_spill() -> None:
     # 5 columns, descending east-to-west to give monotonic drainage.
     plane = np.broadcast_to(np.arange(5.0, 0.0, -1.0), (5, 5)).copy()
     plane[2, 1] = -5.0  # gouge a pit one column in from the high side
-    out = fill_pits(plane)
+    out = fill_pits(plane, use_richdem=False)
 
     # The pit's lowest neighbour is the plane value at (2,2) = 3.
     assert math.isclose(out[2, 1], 3.0, abs_tol=1e-12)
@@ -105,7 +108,7 @@ def test_inverted_gaussian_summit_is_filled_to_rim() -> None:
     n = 33
     hill = _gaussian_hill(n, cell=1.0, height=80.0)
     inverted = float(np.nanmax(hill)) - hill
-    filled = fill_pits(inverted)
+    filled = fill_pits(inverted, use_richdem=False)
     centre = (n - 1) // 2
 
     boundary_min = min(
@@ -134,7 +137,7 @@ def test_nan_cells_pass_through() -> None:
     dem = np.full((10, 10), 5.0)
     dem[3, 3] = np.nan
     dem[7, 5] = np.nan
-    out = fill_pits(dem)
+    out = fill_pits(dem, use_richdem=False)
     assert np.isnan(out[3, 3])
     assert np.isnan(out[7, 5])
     finite = ~np.isnan(out)
@@ -148,7 +151,7 @@ def test_nan_acts_as_drainage_outlet() -> None:
     dem = np.full((7, 7), 10.0)
     dem[3, 3] = 0.0
     dem[3, 4] = np.nan
-    out = fill_pits(dem)
+    out = fill_pits(dem, use_richdem=False)
     # The pit cell has a NaN neighbour, so it is itself a seed cell.
     # It is never raised because its draining path runs into the NaN.
     assert math.isclose(out[3, 3], 0.0, abs_tol=1e-12)
@@ -156,7 +159,7 @@ def test_nan_acts_as_drainage_outlet() -> None:
 
 def test_all_nan_input_passes_through() -> None:
     dem = np.full((6, 6), np.nan)
-    out = fill_pits(dem)
+    out = fill_pits(dem, use_richdem=False)
     assert np.all(np.isnan(out))
 
 
@@ -168,14 +171,14 @@ def test_all_nan_input_passes_through() -> None:
 def test_epsilon_zero_leaves_flats_flat() -> None:
     dem = np.full((7, 7), 5.0)
     dem[1:-1, 1:-1] = 0.0
-    out = fill_pits(dem, epsilon=0.0)
+    out = fill_pits(dem, epsilon=0.0, use_richdem=False)
     np.testing.assert_allclose(out[1:-1, 1:-1], 5.0, atol=1e-12)
 
 
 def test_epsilon_creates_strictly_monotone_fill_inside_a_pit() -> None:
     dem = np.full((7, 7), 5.0)
     dem[1:-1, 1:-1] = 0.0
-    out = fill_pits(dem, epsilon=0.01)
+    out = fill_pits(dem, epsilon=0.01, use_richdem=False)
     # Outer ring of the filled basin (distance 1 from rim) is at the
     # spill elevation; the centre cell sits one or more BFS steps deeper
     # and is therefore strictly higher.
@@ -203,3 +206,55 @@ def test_rejects_non_2d_input() -> None:
 def test_rejects_too_small_dem() -> None:
     with pytest.raises(ValueError):
         fill_pits(np.zeros((1, 5)))
+
+
+# ---------------------------------------------------------------------------
+# richdem path (skipped when richdem is not installed)
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_use_richdem_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("thermal_model.physics.hydrology._have_richdem", lambda: False)
+    with pytest.raises(ImportError):
+        fill_pits(np.zeros((4, 4)), use_richdem=True)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_fills_strict_pit_to_spill() -> None:
+    # On a strict pit inside a sloping plane, both backends should
+    # produce the same fill height (no flats, so the epsilon-bump
+    # discrepancy is irrelevant).
+    plane = np.broadcast_to(np.arange(5.0, 0.0, -1.0), (5, 5)).copy()
+    plane[2, 1] = -5.0
+    out_np = fill_pits(plane, use_richdem=False)
+    out_rd = fill_pits(plane, use_richdem=True)
+    np.testing.assert_allclose(out_rd, out_np, atol=1e-9)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_agrees_with_numpy_on_random_dem() -> None:
+    rng = np.random.default_rng(123)
+    dem = rng.uniform(0.0, 100.0, size=(30, 30))
+    dem[10, 10] = -100.0
+    dem[15, 22] = -50.0
+    out_np = fill_pits(dem, use_richdem=False)
+    out_rd = fill_pits(dem, use_richdem=True)
+    # Output >= input on both, no strict pits remain on either, and
+    # the per-cell results agree to within FP slop.
+    assert np.all(out_rd >= dem - 1e-9)
+    assert not _has_strict_pit(out_rd)
+    np.testing.assert_allclose(out_rd, out_np, atol=1e-6)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_preserves_nan() -> None:
+    dem = np.full((8, 8), 5.0)
+    dem[2, 2] = np.nan
+    dem[5, 6] = np.nan
+    out = fill_pits(dem, use_richdem=True)
+    assert np.isnan(out[2, 2])
+    assert np.isnan(out[5, 6])
+    finite_mask = ~np.isnan(out)
+    np.testing.assert_allclose(out[finite_mask], 5.0, atol=1e-12)
