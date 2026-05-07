@@ -67,20 +67,25 @@ the full block diagram):
    bearing. This biases the inverted-DEM flow accumulation toward the
    lee side of features, which is where boundary-layer warm air
    actually pools. **Tilt before inversion, never after.**
-3. **Convergence** — invert the wind-tilted smoothed DEM, pit-fill,
-   and run D∞ flow accumulation. The result is the ground-level
-   convergence of surface warm air.
-4. **Heating field** — slope × aspect × sun × surface albedo × cast
-   shadows, computed from the **raw** DEM (not the smoothed or tilted
-   one — real geometry drives shadows and gradients).
-5. **Energy** — geometric mean of independently normalised heating and
-   convergence: `sqrt(norm(H) · norm(C))`. Both must be non-negligible
-   for a cell to score; either-zero collapses correctly.
-6. **Trigger filter** — multiply by normalised positive profile
-   curvature (convex breaks) and a minimum-slope mask (~2.5° to kill
-   flat-summit and valley-floor artefacts). Profile curvature is read
-   from the **raw** DEM. The output is the trigger-potential raster
-   on `[0, 1]`.
+3. **Heating field** — `H = α · (s · I_beam + I_diffuse)` in W/m²,
+   computed from the **raw** DEM (not the smoothed or tilted one —
+   real geometry drives shadows and gradients).
+4. **Heating-weighted convergence** — invert the wind-tilted smoothed
+   DEM, pit-fill, and run D∞ flow accumulation **with the heating
+   field as the per-cell weight**. Each cell contributes its W/m²
+   to the routing instead of a unit count, so the accumulation at
+   every cell is the total upstream thermal energy that has flowed
+   through it. **There is no separate "combine heating and
+   convergence" step** — the integration is intrinsic to the
+   weighted routing. A shadowed convergent point downstream of a
+   sunny face correctly inherits the upstream warmth; a shadowed
+   spur with a wholly shadowed catchment correctly stays cold even
+   if its geometry is convergent.
+5. **Trigger filter** — multiply normalised weighted-convergence by
+   normalised positive profile curvature (convex breaks) and a
+   minimum-slope mask (~2.5° to kill flat-summit and valley-floor
+   artefacts). Profile curvature is read from the **raw** DEM. The
+   output is the trigger-potential raster on `[0, 1]`.
 
 Wind enters the model **only** via the tilt in step 2. The model
 does **not** drift thermals after detachment — that was a previous

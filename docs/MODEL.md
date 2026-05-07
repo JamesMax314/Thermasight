@@ -3,15 +3,17 @@
 This document is the technical companion to the conceptual sketch in
 `CLAUDE.md §2`. Read that first.
 
-> **Model reformulated 2026-05-07.** The original Phase 3 framing —
-> wind drift of an in-air thermal-potential field — has been
-> superseded by the *ground-level trigger* model: wind enters as a
-> terrain tilt before flow accumulation (§3), and the trigger raster
-> is composed multiplicatively from heating, (wind-tilted)
-> convergence, profile curvature, and a slope mask (§5–§7). The
-> superseded formulation is preserved verbatim in §10 as a record.
-> Production code follows §1–§8; do not reintroduce §10 without
-> explicit operator approval. The full rationale lives in
+> **Model reformulated 2026-05-07** (drift → wind-tilt) **and refined
+> the same day** (post-hoc heating × convergence multiplier →
+> heating-weighted flow accumulation). Wind enters as a terrain tilt
+> before flow accumulation (§3); heating enters as the per-cell
+> weight on the same flow accumulation (§5), so the routing intrinsically
+> integrates "where the air is warm" with "where it converges". The
+> trigger raster is then `normalise(weighted_convergence) × κ̂⁺ ×
+> slope_mask` (§7). The superseded drift formulation is preserved
+> verbatim in §10 as a record. Production code follows §1–§8; do not
+> reintroduce §10 without explicit operator approval. The full
+> rationale for both reformulations lives in
 > `docs/model_correction.md`.
 
 ---
@@ -178,39 +180,67 @@ heating field never sees the smoothed or wind-tilted DEM.
 
 ---
 
-## 5. Energy coupling (Phase 3)
+## 5. Heating-weighted convergence (Phase 3)
 
-The thermal energy raster is the geometric mean of independently
-normalised heating and convergence:
-
-$$
-E(\mathbf{x}) = \sqrt{ \hat H(\mathbf{x}) \cdot \hat C(\mathbf{x}) }
-$$
-
-where $\hat{\cdot}$ denotes percentile-normalisation: clip at the
-99th percentile of strictly-positive cells, divide, clip to $[0, 1]$.
+Heating and convergence are not combined as separate fields with a
+post-hoc multiplier. Instead, the heating field $H(\mathbf{x})$ in
+W/m² is the per-cell **weight** on the D∞ flow accumulation of §2,
+so each cell contributes its own thermal-energy injection rate to
+the routing rather than a unit count:
 
 $$
-\hat H = \mathrm{clip}\!\left( \frac{H}{q_{99}(H \mid H > 0)},\ 0,\ 1 \right),
-\qquad
-\hat C = \mathrm{clip}\!\left( \frac{C}{q_{99}(C \mid C > 0)},\ 0,\ 1 \right).
+C_w(\mathbf{x})
+  = \mathrm{D}\!\infty\text{-accum}\bigl(\,
+      \tilde z_{\text{tilted}};\; \text{weights}=H \,\bigr)(\mathbf{x}).
 $$
 
-The geometric mean is preferred over the arithmetic mean because
-*either* zero must collapse the cell: a hot bog with no convergence
-is not a thermal, nor is a cold spur with strong convergence. The
-arithmetic mean would let a single very-bright axis dominate.
+$C_w(\mathbf{x})$ is the total upstream W/m² that has flowed through
+$\mathbf{x}$ along the inverted-and-tilted gradient. Units are
+$\mathrm{W/m^2 \cdot \text{cells}}$ (or, in metric mode,
+$\mathrm{W/m^2 \cdot m^2} = \mathrm{W}$ — total upstream radiative
+power, which is conceptually right but the magnitude is calibrated
+against percentile rather than absolute W).
+
+### Why weighted accumulation, not a separate multiplier
+
+The previous formulation used $E = \sqrt{\hat H \cdot \hat C}$ on
+normalised inputs (§10.1, briefly held). Two problems:
+
+1. A *local* multiplier zeros the cell whenever $H = 0$ at that cell,
+   even if a strong upstream sunlit catchment is feeding warm air
+   into it. The physical answer for a shadowed convergent point fed
+   by a sunny upwind slope is "warm air pools here"; the local
+   multiplier wrongly says "cold cell, no thermal".
+2. The post-hoc combination treats $C$ and $H$ as independent
+   layers when they are physically coupled — convergence is the
+   *transport* of the warm air the heating produced.
+
+Weighted accumulation handles both correctly: routing carries the
+heating signal along the gradient and accumulates it where the air
+pools. A shadowed convergent point downstream of a sunny face gets
+the right answer. A shadowed spur whose entire catchment is also
+shadowed correctly stays low because no upstream cell injected
+energy.
+
+### Implementation note
+
+Use `richdem`'s `FlowAccumulation` with `method='Dinf'` and the
+`weights` keyword carrying the heating raster as an `rdarray` with
+the same nodata convention as the DEM. The Phase 1 `flow_accumulation`
+helper already exposes a weights argument (see `docs/ROADMAP.md`
+Phase 1); the Phase 3 wiring is purely a question of what gets
+passed in. The numpy fallback path must also accept and apply
+weights to keep CI working without `richdem`.
 
 ### Relationship to `physics.coupling.thermal_potential`
 
-The existing API
-$P = H^p \cdot C^q$ is retained as a sensitivity-analysis knob; the
-production pipeline uses $p = q = \tfrac{1}{2}$ applied to
-$\hat H, \hat C$ rather than raw $H, C$. The two formulations agree
-on the geometric mean when run on normalised inputs; they differ when
-$p \neq q$ or when raw inputs are used. Phase 4 may automate
-$(p, q)$ as a function of time of day (heating-weighted morning,
-convergence-weighted afternoon) per `CLAUDE.md` §5.
+The existing $P = H^p \cdot C^q$ helper is **no longer used in the
+production pipeline.** It is retained for backward compatibility and
+sensitivity-analysis exploration only; new code paths should not
+import it. Phase 4's planned time-of-day weighting (heating-weighted
+morning, convergence-weighted afternoon per `CLAUDE.md` §5) is now
+expressed by scaling the heating weights themselves rather than by
+sweeping $(p, q)$ on a separate coupling step.
 
 ---
 
@@ -244,31 +274,45 @@ smooth applied to the DEM before flow routing.
 
 ## 7. Trigger composition (Phase 3)
 
-The trigger-potential raster is the product of energy, normalised
-positive curvature, and a minimum-slope gate:
+The trigger-potential raster is the product of normalised
+weighted-convergence, normalised positive curvature, and a
+minimum-slope gate:
 
 $$
 T(\mathbf{x})
-  = E(\mathbf{x}) \cdot \hat\kappa^+(\mathbf{x})
+  = \hat C_w(\mathbf{x}) \cdot \hat\kappa^+(\mathbf{x})
     \cdot \mathbb{1}\!\bigl[\, \mathrm{slope}(\mathbf{x}) > \theta_{\min} \,\bigr]
 $$
 
-with $\theta_{\min} \approx 2.5°$ killing flat-summit and
-valley-floor artefacts. $T \in [0, 1]$ by construction (each factor
-is in $[0, 1]$).
+where
 
-This composition allows two distinct trigger styles to coexist in the
-output:
+$$
+\hat C_w
+  = \mathrm{clip}\!\left(
+      \frac{C_w}{q_{99}(C_w \mid C_w > 0)},\ 0,\ 1
+    \right)
+$$
 
-* **Heated spur tips** — moderate curvature, high energy. Lit by
-  $E$, modestly amplified by $\hat\kappa^+$.
-* **Cliff edges and scarps** — high curvature, moderate energy.
-  Curvature dominates the multiplication.
+(percentile-normalisation matching $\hat\kappa^+$ in §6) and
+$\theta_{\min} \approx 2.5°$ kills flat-summit and valley-floor
+artefacts. $T \in [0, 1]$ by construction (each factor is in
+$[0, 1]$).
+
+This composition allows two distinct trigger styles to coexist in
+the output:
+
+* **Heated spur tips** — moderate curvature, high $\hat C_w$
+  (sunny upstream, geometrically convergent here). The convergence
+  factor dominates.
+* **Cliff edges and scarps** — high curvature, moderate $\hat C_w$
+  (laminar through-flow rather than plan convergence). The
+  curvature factor dominates.
 
 Both are real trigger types in practice; an additive composition
 would over-weight one style; the multiplicative form requires both
 factors to be non-negligible, matching the §1 "all three conditions"
-rule.
+rule (heating + convergence are now jointly encoded in
+$\hat C_w$).
 
 ---
 
@@ -326,17 +370,40 @@ boundary-layer flow distortion that $k$ approximates.
 The original Phase 3 plan introduced two steps that have since been
 removed:
 
-### 10.1 Coupling (old)
+### 10.1 Coupling (old, two superseded variants)
+
+**Variant A (original, raw inputs).**
 
 $$
 P = \sqrt{H \cdot C} \qquad \text{(or, more generally, } P = H^p \cdot C^q\text{)}
 $$
 
-applied to **un-normalised** $H$ and $C$. The current model (§5)
-applies the geometric mean to *normalised* inputs $\hat H$ and
-$\hat C$ instead, which removes the dynamic-range mismatch between
-$H$ (0 to ~$10^3$ W/m²) and $C$ (1 to ~$10^5$ cell counts) without
-relying on a sqrt to compress it.
+applied to *un-normalised* $H$ and $C$. The dynamic-range mismatch
+between $H$ (0 to ~$10^3$ W/m²) and $C$ (1 to ~$10^5$ cell counts)
+let single high-$C$ cells dominate the ranking even on a sqrt scale.
+Implemented in `physics/coupling.thermal_potential`; retained in the
+codebase for backward compatibility but **not** wired into the new
+pipeline.
+
+**Variant B (briefly-held, normalised inputs).**
+
+$$
+E = \sqrt{ \hat H \cdot \hat C }
+$$
+
+with $\hat{\cdot}$ percentile-normalised to $[0, 1]$. Held for
+~hours during the 2026-05-07 reformulation before being superseded
+by heating-weighted accumulation (§5). Why discarded: a *local*
+multiplier zeros the cell wherever $H = 0$ at that cell, even when a
+sunny upwind catchment is feeding warm air through the gradient to
+this convergent point. Weighted accumulation gets this case right by
+construction; the post-hoc geometric mean does not.
+
+Both variants treated $C$ and $H$ as independent fields combined
+after the fact. The current model recognises that they are
+physically coupled — convergence is the *transport* of the warm air
+that heating produced — and folds the coupling into the routing
+itself.
 
 ### 10.2 Wind drift (removed)
 

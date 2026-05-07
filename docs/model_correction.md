@@ -106,20 +106,52 @@ Wet peat and bog (~0.20–0.35 effective, because evaporation absorbs most
 incoming energy) should be heavily suppressed. Heather and dry grass sit
 around 0.70–0.78.
 
-### Combining with convergence
+### Integration with convergence (heating becomes the flow weight)
 
-Normalise both layers to [0, 1] independently (clip at e.g. the 99th
-percentile, then divide). Use the **geometric mean** to combine:
+Heating is **not** combined with convergence as a separate layer
+multiplied in afterwards. Instead, the heating field is the
+per-cell weight on the D∞ flow accumulation of §2. Each cell
+contributes its own W/m² to the routing rather than a unit count of
+1, so the accumulation result at every cell is the total upstream
+thermal energy that has flowed through it on its way to the summit:
 
 ```python
-h_norm = np.clip(heating / np.percentile(heating[heating > 0], 99), 0, 1)
-c_norm = np.clip(convergence / np.percentile(convergence[convergence > 0], 99), 0, 1)
-thermal_energy = np.sqrt(h_norm * c_norm)
+weighted_convergence = dinf_flow_accum(
+    invert(tilted_dem),
+    weights=heating,
+)
 ```
 
-The geometric mean requires *both* to be non-negligible. An arithmetic mean
-would allow a very bright unheated spur or a very hot flat bog to dominate.
-The geometric mean suppresses either-zero cases correctly.
+Why this is better than the post-hoc multiplier
+$\sqrt{\hat H \cdot \hat C}$ that an earlier draft of this document
+proposed:
+
+- A **local** multiplier zeros every cell where $H = 0$. A shadowed
+  convergent point fed by a sunny upwind face is then wrongly
+  marked dead, even though warm air from that upwind face is
+  physically flowing through and pooling at that point. Weighted
+  accumulation routes the upstream warmth to the convergent point
+  and gets the right answer.
+- $C$ and $H$ are not independent layers — convergence is the
+  *transport* of the warm air heating produced. Folding the
+  coupling into the routing itself reflects that physics.
+- A shadowed spur whose entire catchment is also shadowed
+  correctly stays low under weighted accumulation, because no
+  upstream cell has injected energy. Both formulations agree on
+  this case; they differ on the "shadowed-downstream-of-sunny" case
+  above, which the model gets right only when the integration is
+  intrinsic to the routing.
+
+`richdem`'s `FlowAccumulation(method='Dinf', weights=...)` accepts
+a per-cell weight raster as an `rdarray`; the existing project
+helper `physics.flow_accumulation` already plumbs this through (see
+`docs/ROADMAP.md` Phase 1). The numpy fallback path must accept
+weights too so CI keeps working without `richdem`. Verify the
+installed `richdem` version exposes the `weights` keyword before
+relying on it; if not, the fallback is to obtain D∞ fractions via
+`rd.FlowProportions` and apply a manual weighted accumulation pass
+in topological (descending-elevation) order — equivalent, and
+already the structure of the numpy reference path.
 
 ---
 
@@ -306,14 +338,21 @@ curv_positive = np.maximum(profile_curv, 0)
 # Normalise to [0, 1].
 curv_norm = curv_positive / max(np.percentile(curv_positive, 99), 1e-9)
 
-# Combine: both thermal_energy AND convexity must be present.
-trigger_potential = thermal_energy * curv_norm
+# Normalise the heating-weighted convergence the same way.
+wc_norm = np.clip(
+    weighted_convergence
+    / max(np.percentile(weighted_convergence[weighted_convergence > 0], 99), 1e-9),
+    0, 1,
+)
+
+# Combine: both upstream-thermal-energy delivery AND convexity must be present.
+trigger_potential = wc_norm * curv_norm
 ```
 
-This allows cliff tops (high curvature, moderate energy) and heated spur tips
-(moderate curvature, high energy) to both appear as triggers, which matches
-experience: both terrain types produce thermals, but through different
-dominant mechanisms.
+This allows cliff tops (high curvature, moderate weighted-convergence) and
+heated spur tips (moderate curvature, high weighted-convergence) to both
+appear as triggers, which matches experience: both terrain types produce
+thermals, but through different dominant mechanisms.
 
 ### Minimum slope gate
 
@@ -344,52 +383,61 @@ Inputs
   k            : float, wind tilt coefficient (default 0.03)
 
 Pipeline
-  1. smooth_dem   = gaussian_smooth(dem, sigma_cells=10)
-                    # sigma_cells ≈ sigma_m / cell_size, typically 10–25 m
-                    # suppress sub-thermal-scale noise before flow routing
+  1. smooth_dem    = gaussian_smooth(dem, sigma_cells=10)
+                     # sigma_cells ≈ sigma_m / cell_size, typically 10–25 m
+                     # suppress sub-thermal-scale noise before flow routing
 
-  2. tilted_dem   = wind_tilt_ramp(smooth_dem, cell_size,
-                                   wind_from, wind_speed, k)
-                    # tilt BEFORE inversion
+  2. tilted_dem    = wind_tilt_ramp(smooth_dem, cell_size,
+                                    wind_from, wind_speed, k)
+                     # tilt BEFORE inversion
 
-  3. convergence  = dinf_flow_accum(invert(tilted_dem))
-                    # richdem: fill pits, then D∞ accumulation
+  3. slope, aspect = slope_aspect(dem, cell_size)
+                     # from ORIGINAL dem, not smoothed or tilted
 
-  4. slope, aspect = slope_aspect(dem, cell_size)
-                    # from ORIGINAL dem, not smoothed or tilted
+  4. heating       = solar_irradiance(slope, aspect, sun_elev, sun_az,
+                                      dem=dem, cast_shadows=True)
+                     * absorption(land_cover)
+                     # W/m², the per-cell flow-accumulation weight in step 5
 
-  5. heating      = solar_irradiance(slope, aspect, sun_elev, sun_az,
-                                     dem=dem, cast_shadows=True)
-                    * absorption(land_cover)
+  5. weighted_conv = dinf_flow_accum(invert(tilted_dem), weights=heating)
+                     # richdem: fill pits, then D∞ accumulation with
+                     # heating as per-cell weight. There is NO separate
+                     # "combine convergence and heating" step — the
+                     # integration is intrinsic to the weighted routing.
 
-  6. energy       = geometric_mean(normalise(convergence),
-                                   normalise(heating))
+  6. profile_curv  = profile_curvature(dem, cell_size)
+                     # from ORIGINAL dem
 
-  7. profile_curv = profile_curvature(dem, cell_size)
-                    # from ORIGINAL dem
+  7. slope_mask    = slope > radians(2.5)
 
-  8. slope_mask   = slope > radians(2.5)
-
-  9. trigger      = energy * normalise(max(profile_curv, 0)) * slope_mask
+  8. trigger       = normalise(weighted_conv)
+                     * normalise(max(profile_curv, 0))
+                     * slope_mask
 
 Outputs
   trigger_potential  : float32, [0, 1], primary product
-  thermal_energy     : float32, [0, 1], diagnostic (convergence × heating)
-  convergence        : float32, raw upstream cell count, diagnostic
+  weighted_conv      : float32, raw upstream W/m² (× cell-area), diagnostic
   heating            : float32, W/m², diagnostic
+  (No separate `thermal_energy` raster — that intermediate is gone.)
 ```
 
 ### Which DEM each step uses
 
-| Step | DEM input | Reason |
-|------|-----------|--------|
-| Gaussian smooth | raw dem | noise removal before all processing |
-| Wind tilt | smoothed dem | tilt applied to clean terrain |
-| Inversion + flow accum | tilted smoothed dem | routing on effective terrain |
-| Slope/aspect | raw dem | real terrain gradient |
-| Solar irradiance | raw dem | cast shadows from real terrain |
-| Profile curvature | raw dem | real terrain shape drives detachment |
-| Slope mask | raw dem | real terrain slope |
+| Step | DEM input | Other inputs | Reason |
+|------|-----------|--------------|--------|
+| Gaussian smooth | raw dem | — | noise removal before all processing |
+| Wind tilt | smoothed dem | wind vector, k | tilt applied to clean terrain |
+| Slope/aspect | raw dem | — | real terrain gradient |
+| Solar irradiance | raw dem | sun position | cast shadows from real terrain |
+| Heating | — | irradiance, land_cover | W/m² weight raster for step 5 |
+| Inversion + weighted flow accum | tilted smoothed dem | weights = heating | routing on effective terrain, weighted by W/m² so each cell contributes its own thermal energy injection |
+| Profile curvature | raw dem | — | real terrain shape drives detachment |
+| Slope mask | raw dem | — | real terrain slope |
+
+Heating is no longer a "downstream layer multiplied in"; it is an
+**input** to the flow-accumulation step, alongside the DEM. The
+output of the routing is *already* the heating-weighted convergence;
+no further coupling step exists.
 
 ---
 
@@ -401,8 +449,12 @@ Outputs
 | Wind tilt coefficient | k | 0.02–0.05 s/m | Tune against VALIDATION.md. |
 | Min slope | θ_min | 2–3° | Kills flat-summit artefacts. |
 | Profile curv threshold | — | 90th–95th percentile | Or use continuous weighting. |
-| Convergence clip | — | 99th percentile | Before normalising. |
-| Heating clip | — | 99th percentile | Before normalising. |
+| Weighted-convergence clip | — | 99th percentile | Before normalising. |
+
+(The previous separate "convergence clip" and "heating clip" rows are
+no longer needed: heating enters the routing as a weight, and the
+single normalised quantity downstream is the heating-weighted
+convergence.)
 
 ---
 
@@ -419,20 +471,33 @@ pipeline. Do not import it from `physics/`.
 
 - `physics/wind_tilt.py`: the `wind_tilt_ramp()` function from §4.
 - `physics/pipeline.py`: the corrected `run_model()` orchestrating §6.
-  Replace the old `run_model()` that called `drift_field`.
+  Replace the old `run_model()` that called `drift_field`. **No
+  intermediate `thermal_energy` raster** — heating is passed as the
+  `weights` argument to `flow_accumulation`, and the output of that
+  call is already the heating-weighted convergence.
 
 ### Modify
 
-`physics/scene.py` (or equivalent): update `ThermalScene` dataclass to
-store `tilted_dem` as a field, and rename any `drifted_*` fields to remove
-the drift framing. Add `trigger_potential` as the primary output field.
+`physics/scene.py` (or equivalent): update `ThermalScene` dataclass
+to store `tilted_dem` and `weighted_convergence` as fields, and
+rename any `drifted_*` or `thermal_energy` fields to remove the
+superseded framings. Add `trigger_potential` as the primary output
+field.
 
-`cli.py`: remove `--release-height` and `--climb-rate` arguments (they were
-inputs to the drift model). Add `--wind-tilt-k` as an optional float
-argument with default 0.03.
+`physics/coupling.py` (`thermal_potential` $= H^p \cdot C^q$): no
+longer wired into the production pipeline. Keep the function for
+backward compatibility and one-off sensitivity studies, but
+`pipeline.py` must not import it. The geometric-mean coupling that
+this function implements has been superseded by passing heating as
+a flow-accumulation weight (see "Integration with convergence" in
+§3 above).
 
-`docs/MODEL.md`: the pipeline diagram there (if it exists) needs updating to
-match §6 above.
+`cli.py`: remove `--release-height` and `--climb-rate` arguments
+(they were inputs to the drift model). Add `--wind-tilt-k` as an
+optional float argument with default 0.03.
+
+`docs/MODEL.md`: the pipeline diagram there (if it exists) needs
+updating to match §6 above.
 
 ---
 
