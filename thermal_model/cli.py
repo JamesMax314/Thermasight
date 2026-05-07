@@ -63,6 +63,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Figure DPI (default: 120).",
     )
     preview.add_argument(
+        "--resolution",
+        type=float,
+        default=None,
+        metavar="METRES",
+        help=(
+            "Target cell size in metres for diagnostic plotting. If coarser "
+            "than the source DEM, the file is bilinearly resampled on read "
+            "before the pipeline runs. Useful for whole-mosaic previews where "
+            "the cast-shadow march would otherwise be slow at native "
+            "resolution. Default: native source resolution."
+        ),
+    )
+    preview.add_argument(
         "--datetime",
         dest="when",
         type=str,
@@ -161,7 +174,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         plot_slope,
     )
 
-    dem = read_dem(args.dem)
+    dem = read_dem(args.dem, target_cell_size_m=args.resolution)
 
     if args.what == "all":
         fig, axes = plt.subplots(2, 2, figsize=(12, 12), dpi=args.dpi)

@@ -86,6 +86,30 @@ python -m thermal_model preview --dem <path> --what heating \
 hazy). `--absorptivity` is the surface absorptivity α = 1 − albedo
 (default 0.80, dry grass / heather; bog is ~0.4 — see `docs/DATA.md`).
 
+### `--resolution` for big mosaics
+
+The cast-shadow horizon scan dominates pipeline cost (>95%) and
+scales worse than linearly with cell count. On the full 15 km × 20 km
+Mallerstang mosaic at native 1 m resolution the heating render takes
+~25 minutes; at 5 m resolution it takes ~40 seconds and the
+diagnostic picture is essentially the same.
+
+```bash
+# Whole-mosaic heating at 5 m — interactive turnaround.
+python -m thermal_model preview \
+  --dem data/processed/mallerstang_wildboar_1m.tif \
+  --what heating \
+  --datetime "2026-05-06T13:00:00+01:00" \
+  --resolution 5.0 \
+  --save heating_5m.png
+```
+
+`--resolution` accepts any cell size in metres ≥ the source's; finer
+than the source is rejected (no upsampling). Works on every `--what`
+variant, not just `heating`. The resample uses bilinear
+interpolation with a separate validity-mask reread to keep nodata
+edges from polluting averages.
+
 `python -m thermal_model preview --help` lists all options.
 
 ## Status

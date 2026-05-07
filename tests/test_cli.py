@@ -142,6 +142,50 @@ def test_preview_heating_requires_datetime(synthetic_dem_path: Path) -> None:
         )
 
 
+def test_preview_resolution_speeds_up_a_heating_render(
+    synthetic_dem_path: Path, tmp_path: Path
+) -> None:
+    # Smoke-test that --resolution drives a coarser render through to
+    # the heating pipeline and produces a smaller-but-valid PNG. We
+    # don't time-assert here since CI is noisy; the unit test on
+    # read_dem already pins the resampling shape semantics.
+    out = tmp_path / "heating_2m.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            "heating",
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--resolution",
+            "2.0",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+
+
+def test_preview_resolution_rejects_finer_than_source(
+    synthetic_dem_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="finer than the source"):
+        main(
+            [
+                "preview",
+                "--dem",
+                str(synthetic_dem_path),
+                "--what",
+                "convergence",
+                "--resolution",
+                "0.5",
+            ]
+        )
+
+
 def test_preview_heating_rejects_naive_datetime(synthetic_dem_path: Path) -> None:
     with pytest.raises(SystemExit, match="timezone-naive"):
         main(
