@@ -21,11 +21,18 @@ Inputs:
 
 Outputs:
 - Heating field (W/m²) per cell
-- Thermal convergence raster (the "inverted treacle" map)
-- Drifted thermal-potential raster
+- Thermal convergence raster (the "inverted treacle" map, optionally
+  wind-tilted — see §2)
+- Trigger-potential raster: the primary product, predicting where on
+  the ground thermals source and trigger
 - Trigger point set (vector + raster)
 - Diagnostic plots and exportable GeoTIFFs / KMZ for use in XCTrack /
   SeeYou / Google Earth
+
+The model predicts **ground-level thermal source and trigger
+locations** — not where a thermal is once it is airborne. Anything
+about a parcel's drift after detachment is out of scope for the main
+pipeline (see `@docs/model_correction.md`).
 
 The user is the primary operator and is an experienced paraglider flying
 the Dales; **assume domain knowledge in their requests** and ask before
@@ -49,28 +56,53 @@ flipped DEM. Convex features on the real terrain (spurs, cliff lips,
 shoulders) become concave on the inverted DEM, so flow pools there —
 which is exactly where rising air is predicted to converge and release.
 
-Everything else in the pipeline is decoration on this core:
+Everything else in the pipeline is decoration on this core. The
+pipeline runs in this order (see `@docs/model_correction.md` §6 for
+the full block diagram):
 
-1. **Heating field** — where the air is warmed (slope × aspect × sun ×
-   surface albedo × shadows).
-2. **Convergence** — the inverted-DEM flow accumulation above.
-3. **Coupling** — multiply (or geometric-mean) heating and convergence
-   to get a thermal-potential raster.
-4. **Drift** — translate the potential field downwind by
-   `wind_speed × (release_height / climb_rate)` to map sources to release
-   locations.
-5. **Trigger detection** — intersect the drifted potential with high
-   positive **profile curvature** (convex breaks in slope) to localise
-   release points.
+1. **Smooth the raw DEM** with a Gaussian (σ ≈ 10–25 m) to suppress
+   sub-thermal noise before any flow routing.
+2. **Wind tilt** — add a linear ramp `k · wind_speed · (col_m·sin θ −
+   row_m·cos θ)` to the *smoothed* DEM, where θ is the wind-to
+   bearing. This biases the inverted-DEM flow accumulation toward the
+   lee side of features, which is where boundary-layer warm air
+   actually pools. **Tilt before inversion, never after.**
+3. **Heating field** — `H = α · (s · I_beam + I_diffuse)` in W/m²,
+   computed from the **raw** DEM (not the smoothed or tilted one —
+   real geometry drives shadows and gradients).
+4. **Heating-weighted convergence** — invert the wind-tilted smoothed
+   DEM, pit-fill, and run D∞ flow accumulation **with the heating
+   field as the per-cell weight**. Each cell contributes its W/m²
+   to the routing instead of a unit count, so the accumulation at
+   every cell is the total upstream thermal energy that has flowed
+   through it. **There is no separate "combine heating and
+   convergence" step** — the integration is intrinsic to the
+   weighted routing. A shadowed convergent point downstream of a
+   sunny face correctly inherits the upstream warmth; a shadowed
+   spur with a wholly shadowed catchment correctly stays cold even
+   if its geometry is convergent.
+5. **Trigger filter** — multiply normalised weighted-convergence by
+   normalised positive profile curvature (convex breaks) and a
+   minimum-slope mask (~2.5° to kill flat-summit and valley-floor
+   artefacts). Profile curvature is read from the **raw** DEM. The
+   output is the trigger-potential raster on `[0, 1]`.
 
-If a proposed change weakens the connection between flow accumulation on
-the inverted DEM and the convergence map, **stop and discuss with the
-user before implementing**. That mapping is the whole project.
+Wind enters the model **only** via the tilt in step 2. The model
+does **not** drift thermals after detachment — that was a previous
+formulation that has been superseded (see
+`@docs/model_correction.md` §4 and §8). Any reintroduction of an
+in-air drift step requires explicit operator approval.
 
-Detailed math, derivations, and the planned upgrade path from
-"hydrological analogy" to a proper Lagrangian plume model are in
-`@docs/MODEL.md`. Read that file when working on anything in
-`thermal_model/physics/`.
+If a proposed change weakens the connection between flow accumulation
+on the (tilted) inverted DEM and the convergence map, **stop and
+discuss with the user before implementing**. That mapping is the
+whole project.
+
+Detailed math and derivations are in `@docs/MODEL.md`; the
+ground-level reformulation and the wind-tilt mechanism are in
+`@docs/model_correction.md` and that document supersedes any
+conflicting wording elsewhere. Read both files when working on
+anything in `thermal_model/physics/`.
 
 ---
 
@@ -81,7 +113,7 @@ thermal_model/
   io/              # DEM and raster I/O, reprojection, tiling
   terrain/         # slope, aspect, curvature, ridge detection
   solar/           # sun position, irradiance, hillshade, cast shadows
-  physics/         # the inverted-treacle engine + heating + drift
+  physics/         # the inverted-treacle engine + heating + wind tilt
   triggers/        # trigger-point detection and clustering
   viz/             # matplotlib previews, GeoTIFF export, KMZ export
   cli.py           # `python -m thermal_model ...` entrypoint
@@ -133,17 +165,22 @@ These are facts about thermals and Yorkshire Dales terrain that should
 shape design decisions. **Do not 'simplify' the model in ways that
 violate these.**
 
-- **Thermals trigger far from their heat source.** A south-facing rocky
-  bowl warms the air, but the thermal often releases off a spur or cliff
-  edge several hundred metres downwind. Wind drift between source and
-  release is a first-class part of the model, not an afterthought.
+- **The trigger location is on the ground, downwind of the heat
+  source.** A south-facing rocky bowl warms the boundary-layer air, but
+  the air pools and detaches at a convex break some distance to the
+  lee — a spur shoulder, cliff lip, or ridge crest. The model finds
+  this *ground-level* location; in-air parcel drift after detachment
+  is out of scope.
 - **Convex breaks matter more than steep slopes.** A gentle slope ending
   in a sudden cliff is a stronger trigger than a uniformly steep face.
   Profile curvature is the right proxy.
-- **Lee-side triggering is real.** With moderate wind, thermals can
-  release on the lee side of ridges where rotor and convergence meet
-  rising warm air. The current single-vector drift handles this poorly;
-  flag this as a known weakness, not a bug.
+- **Lee-side triggering is the primary wind effect.** Boundary-layer
+  warm air is swept downwind and pools on the lee side of ridges and
+  spurs. The model handles this by tilting the DEM along the wind-to
+  direction before inverting and flow-accumulating (see §2 step 2 and
+  `@docs/model_correction.md` §4). Lee-wave uplift, mechanical rotors,
+  and valley-wind convergence lines are *not* modelled — those are
+  known limitations rather than bugs.
 - **Aspect dominates in the morning, terrain dominates in the afternoon.**
   Early-day sources are tightly tied to SE/S/SW-facing slopes. By
   mid-afternoon the whole massif is warm and trigger geometry takes over.
@@ -176,8 +213,8 @@ When working on this project:
    silently — read it from rasterio and warn on mismatch. All
    computations happen in a projected CRS with metres as units.
 4. **Cell size is a parameter, never a constant.** Slope, curvature,
-   drift distance, and flow accumulation thresholds all depend on it.
-   Functions that depend on cell size must take it as an argument.
+   the wind-tilt ramp, and flow-accumulation thresholds all depend on
+   it. Functions that depend on cell size must take it as an argument.
 5. **NaN is the nodata sentinel internally.** Convert from rasterio's
    nodata on read; convert back on write.
 6. **Small test tiles checked in.** Add a 256×256 fixture under
@@ -208,7 +245,8 @@ When working on this project:
   `_ms`, `_wm2`.
 - **Tests**: every public function has at least one unit test. Use
   hypothesis for things like "rotating the DEM rotates the slope by the
-  same angle" and "scaling cell size by k scales drift distance by k".
+  same angle" and "scaling cell size by k scales the wind-tilt ramp's
+  pixel-space displacement by 1/k".
 
 ---
 
@@ -248,6 +286,7 @@ python -m thermal_model run \
   --dem data/processed/penyghent_1m.tif \
   --datetime "2026-05-06T13:00:00+01:00" \
   --wind-from 225 --wind-speed 4 \
+  --wind-tilt-k 0.03 \
   --out outputs/penyghent_2026-05-06_1300.tif \
   --kmz outputs/penyghent_2026-05-06_1300.kmz
 
@@ -290,11 +329,16 @@ High level:
    visual validation against `@docs/VALIDATION.md`. **Gate: convergence
    map must agree with known thermal spots on 3+ tiles.**
 3. **Phase 2** — solar position, irradiance, hillshade, heating field.
-4. **Phase 3** — wind drift, trigger detection, KMZ export.
+4. **Phase 3** — wind tilt of the inverted-DEM convergence,
+   trigger-potential pipeline (energy × convex curvature × slope
+   mask), trigger-point clustering, KMZ export. See
+   `@docs/model_correction.md` for the corrected formulation that
+   supersedes the original "wind drift" framing.
 5. **Phase 4** — land cover integration, time-of-day weighting, CLI.
-6. **Phase 5** — terrain-aware wind (WindNinja), Lagrangian plume model
-   replacing the hydrological analogy. Big jump in physical realism;
-   only after phases 1–4 are solid.
+6. **Phase 5** — terrain-aware wind (WindNinja) replacing the empirical
+   wind-tilt coefficient `k`, and a Lagrangian plume model alongside
+   the hydrological analogy for cross-validation. Big jump in physical
+   realism; only after phases 1–4 are solid.
 
 Do not skip phases. Do not start phase 2 until phase 1 has passed its
 validation gate, even if it seems easy.

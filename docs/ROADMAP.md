@@ -1,9 +1,13 @@
 # Roadmap
 
-**Current phase: Phase 2 — solar + heating.**
+**Current phase: Phase 3 — wind tilt + ground-level triggers.**
 
-Update this header when a phase completes. Do not skip phases. Do not start
-the next phase until its predecessor's gate passes.
+Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
+on the same date — the original "wind drift" framing has been
+superseded by the ground-level trigger-prediction model in
+`docs/model_correction.md`. Update this header when a phase completes.
+Do not skip phases. Do not start the next phase until its
+predecessor's gate passes.
 
 ---
 
@@ -137,28 +141,124 @@ the Phase 1 convergence layer is wrong.
   cells).
 - [x] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed
   (`thermal_model/physics/coupling.py`: `thermal_potential`
-  computes $P = H^p \cdot C^q$. Default $(p, q) = (0.5, 0.5)$ is
-  the geometric mean from `docs/MODEL.md` §3, chosen because the
-  dynamic range of $C$ (1 to ~$10^5$) dwarfs that of $H$ (0 to
-  ~$10^3$ W/m²) and a plain product would let a single high-$C$
-  cell dominate the ranking. Heating-weighted $(0.7, 0.3)$ matches
-  morning conditions when aspect dominates; convergence-weighted
-  $(0.3, 0.7)$ matches afternoons when the massif is uniformly
-  warm and trigger geometry takes over (`CLAUDE.md` §5). Phase 4
-  will automate this time-of-day weighting; this just exposes the
-  knob. Output is a relative ranking, not a physical quantity —
-  units come out as $(\text{W/m}^2)^p \cdot \text{count}^q$ which
-  is meaningless in absolute terms; display on a percentile
-  scale).
+  computes $P = H^p \cdot C^q$. Default $(p, q) = (0.5, 0.5)$).
+  **Superseded 2026-05-07** — heating now enters the pipeline as
+  the `weights` parameter of D∞ flow accumulation (see Phase 3),
+  not as a separate post-hoc multiplier. `thermal_potential` is
+  retained in the codebase for backward compatibility but is
+  **no longer wired into the production trigger pipeline**. Phase 4
+  time-of-day weighting will scale the heating weights themselves
+  rather than sweep $(p, q)$ on a separate coupling step. See
+  `docs/MODEL.md` §10.1 for the historical record.
 
-## Phase 3 — Wind drift + triggers
+## Phase 3 — Wind tilt + ground-level triggers
 
-- [ ] Single-vector drift via sub-pixel `ndimage.shift`.
-- [ ] Profile-curvature trigger detector + DBSCAN clustering.
-- [ ] GeoTIFF + KMZ export of trigger points.
+**Reformulated 2026-05-07** in two passes:
+
+1. The original "wind drift" framing was solving the wrong problem
+   (it predicted where airborne thermals end up, not where they
+   source from the ground). Wind now enters as a terrain tilt
+   before inversion.
+2. The interim "geometric mean of normalised heating × convergence"
+   step was also dropped. Heating is now the **per-cell weight on
+   the D∞ flow accumulation**, so the routing intrinsically
+   integrates "where the air is warm" with "where it converges" in
+   one pass. There is no separate coupling step.
+
+See `docs/model_correction.md` for the full justification. The model
+predicts ground-level trigger locations. There is no in-air drift
+step in the main pipeline.
+
+- [ ] `physics/wind_tilt.py` — `wind_tilt_ramp(dem, cell_size_m,
+  wind_from_deg, wind_speed_ms, k)` returning the tilted DEM. Pure
+  numpy; cell-size aware; documents the sign convention against
+  cardinal-wind cases (N→S, S→N, W→E, E→W, SW→NE).
+- [ ] Confirm `physics.flow_accumulation` accepts a `weights`
+  raster on both the `richdem` and numpy fallback paths (Phase 1
+  task list claims it does — verify on the installed `richdem`
+  version before wiring the pipeline). If `richdem`'s
+  `FlowAccumulation` exposes `weights=`, use it directly; if not,
+  obtain D∞ proportions via `rd.FlowProportions` and run the
+  weighted topological pass through the existing numpy reference
+  path.
+- [ ] `physics/pipeline.py` — `run_model(...)` orchestrating the
+  §6-of-`model_correction.md` block: smooth → wind tilt → heating
+  field from raw DEM → invert + pit-fill + D∞ accumulation
+  **weighted by heating** → multiply by normalised
+  max(profile_curv, 0) → multiply by min-slope mask (~2.5°).
+  Returns the trigger-potential raster and intermediate
+  diagnostics. **No separate "energy" raster** — that step has
+  been merged into the routing.
+- [ ] Trigger-point clustering on the trigger-potential raster.
+  Connected components (`scipy.ndimage.label`) on a high-percentile
+  mask, ranked by mean strength, with a min-cluster-cells filter.
+  (`scikit-learn` DBSCAN is *not* added — connected components is
+  the equivalent operation on a regular raster and avoids the dep
+  per `CLAUDE.md` §4.)
+- [ ] GeoTIFF + KMZ export of trigger points (`simplekml`,
+  reprojection to WGS84 from the DEM CRS).
 - [x] CLI subcommand: `preview` (pulled forward to Phase 1 alongside
   the diagnostic plots).
-- [ ] CLI subcommand: `run`.
+- [ ] CLI subcommand: `run` — wires the full pipeline. Args:
+  `--dem`, `--datetime`, `--wind-from`, `--wind-speed`,
+  `--wind-tilt-k` (default 0.03), `--out` (trigger GeoTIFF),
+  `--kmz` (trigger points). The deprecated `--release-height` and
+  `--climb-rate` are *not* added.
+- [ ] Diagnostic plotter `viz.plot_trigger_potential` and a
+  `preview --what trigger` CLI hook. The diagnostic should also
+  expose `--what weighted-convergence` so the heating-weighted
+  flow accumulation can be inspected on its own.
+
+### Quarantined / removed
+
+The previous `physics/drift.py` and the `drift_field()` /
+`drift_distance_m` API are removed from the main pipeline. If
+post-detachment in-air drift is ever needed (e.g. for XC track
+correlation) it lives in a separately-named utility module under
+`thermal_model/utils/` with a docstring stating it is *not* part of
+the trigger-prediction pipeline. Operator approval required before
+reintroducing.
+
+### Validation
+
+**Gate: heating-weighted convergence must distinguish geometrically
+equivalent spurs by aspect.** Construct a synthetic test case with
+two mirror-image spurs of identical geometry, one S-facing and one
+N-facing, under a noon midsummer sun. Compute the trigger raster
+for both. The S-facing spur must score higher than the N-facing
+spur — this is exactly the case the previous post-hoc multiplier
+got right by accident (local $H = 0$ on the shadowed face zeros
+the cell) but the new formulation gets right by physics: shadowed
+upstream cells inject zero W/m² into the routing, so the shadowed
+spur receives no upstream thermal energy. A second-order check:
+if the shadowed spur's catchment is artificially relit (e.g. by
+removing the cast-shadow mask), its score should rise toward the
+sunlit spur — verifying that the routing actually transports the
+upstream warmth to the convergent point rather than just multiplying
+by it locally.
+
+After implementation, the trigger raster on the Wild Boar Fell +
+Mallerstang mosaic for a typical SW summer afternoon (5–8 m/s from
+210–240°, 1200–1400 BST) should show:
+
+* SW-facing lower flanks of Wild Boar Fell bright (sun + convergence
+  + convex spurs).
+* Lee-side (NE) enhancement of the main E-facing scarp relative to a
+  zero-wind baseline (the tilt's principal observable).
+* Mallerstang Edge cliff line lit by curvature × moderate
+  weighted-convergence even where plan convergence is laminar.
+* Flat summit plateau dark (slope mask + low weighted-convergence
+  after smoothing).
+* Valley floors suppressed (slope mask).
+* **Shadowed convergent points downstream of sunny faces should
+  appear**, not be zeroed out. If they vanish entirely (cf. the old
+  post-hoc multiplier), the heating raster is being applied as a
+  local mask rather than as a flow weight — re-check the wiring of
+  `weights=heating` into `flow_accumulation`.
+
+If the NE side of Wild Boar Fell does not enhance under SW wind
+relative to the zero-wind baseline, the tilt has the wrong sign;
+re-check the ramp formula (`docs/model_correction.md` §4).
 
 ## Phase 4 — Land cover + time-of-day
 
@@ -168,6 +268,12 @@ the Phase 1 convergence layer is wrong.
 
 ## Phase 5 — Real physics
 
-- [ ] WindNinja-driven terrain-aware wind field.
-- [ ] Lagrangian plume model replacing the hydrological analogy.
-- [ ] Comparison with Phase 1 convergence map as the validation step.
+- [ ] WindNinja-driven terrain-aware wind field, replacing the
+  empirical wind-tilt coefficient `k`. The wind field itself encodes
+  the boundary-layer flow distortion that the linear ramp
+  approximates.
+- [ ] Lagrangian plume model running alongside the (tilted) inverted-
+  DEM hydrological analogy, for cross-validation rather than
+  replacement.
+- [ ] Comparison of the two convergence maps and the trigger raster
+  against `docs/VALIDATION.md` as the joint validation step.
