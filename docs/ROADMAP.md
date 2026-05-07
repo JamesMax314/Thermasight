@@ -169,10 +169,17 @@ See `docs/model_correction.md` for the full justification. The model
 predicts ground-level trigger locations. There is no in-air drift
 step in the main pipeline.
 
-- [ ] `physics/wind_tilt.py` — `wind_tilt_ramp(dem, cell_size_m,
+- [x] `physics/wind_tilt.py` — `wind_tilt_ramp(dem, cell_size_m,
   wind_from_deg, wind_speed_ms, k)` returning the tilted DEM. Pure
   numpy; cell-size aware; documents the sign convention against
-  cardinal-wind cases (N→S, S→N, W→E, E→W, SW→NE).
+  cardinal-wind cases (N→S, S→N, W→E, E→W, SW→NE). Adds
+  `delta = k·|u|·(col_m·sinθ − row_m·cosθ)` for `θ = wind-to`
+  bearing, preserves dem dtype, propagates NaN. Tests in
+  `test_physics_wind_tilt.py` pin the cardinal sign convention,
+  linearity in $k$ and $|u|$, reversibility under +180°, NaN/dtype
+  preservation, and a hypothesis property that the per-metre slope
+  along the wind-to direction is exactly $k|u|$ regardless of
+  cell size or grid shape.
 - [ ] Confirm `physics.flow_accumulation` accepts a `weights`
   raster on both the `richdem` and numpy fallback paths (Phase 1
   task list claims it does — verify on the installed `richdem`
