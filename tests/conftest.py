@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import matplotlib
 
-import numpy as np
-import pytest
-import rasterio
-from rasterio.crs import CRS
-from rasterio.transform import from_origin
+# Use a non-interactive backend so viz tests run headless under CI and
+# don't try to open a display. Must happen before pyplot is imported.
+matplotlib.use("Agg")
+
+from pathlib import Path  # noqa: E402
+
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
+import rasterio  # noqa: E402
+from rasterio.crs import CRS  # noqa: E402
+from rasterio.transform import from_origin  # noqa: E402
 
 
 @pytest.fixture

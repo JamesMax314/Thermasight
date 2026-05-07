@@ -31,7 +31,11 @@ the next phase until its predecessor's gate passes.
   `flow_accumulation`; Tarboton 1997, eight-facet selection,
   topological pass in descending elevation; weights, NaN nodata,
   auto-selecting backend; reference implementation is the numpy path).
-- [ ] Diagnostic plots overlaid on hillshade.
+- [x] Diagnostic plots overlaid on hillshade
+  (`thermal_model/viz/`: Lambertian `hillshade`, generic `plot_overlay`,
+  and `plot_convergence` / `plot_slope` / `plot_aspect` /
+  `plot_profile_curvature` for sanity checks. Phase 2 will introduce a
+  separate, physical hillshade in `solar/` for cast-shadow analysis).
 - [ ] Property tests: rotation/scaling invariants.
 
 **Gate**: convergence raster agrees with `docs/VALIDATION.md` on three
