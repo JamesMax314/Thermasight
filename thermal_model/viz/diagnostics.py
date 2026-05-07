@@ -25,6 +25,8 @@ from thermal_model.terrain import aspect, profile_curvature, slope
 from thermal_model.viz.hillshade import hillshade
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from matplotlib.axes import Axes
     from matplotlib.colors import Colormap
 
@@ -50,6 +52,11 @@ def plot_overlay(
     label: str = "",
     title: str = "",
     colorbar: bool = True,
+    contours: bool = False,
+    contour_levels: int | Sequence[float] = 10,
+    contour_color: str = "white",
+    contour_linewidth: float = 0.5,
+    contour_alpha: float = 0.6,
 ) -> Axes:
     """Hillshade backdrop with a semi-transparent scalar overlay.
 
@@ -80,6 +87,18 @@ def plot_overlay(
         Axes title.
     colorbar : bool, default True
         Attach a colorbar to ``ax``.
+    contours : bool, default False
+        Draw elevation contour lines on top of the overlay, sourced
+        from ``dem``.
+    contour_levels : int or sequence of float, default 10
+        Either the number of evenly-spaced contour levels, or an
+        explicit sequence of elevation values in metres.
+    contour_color : str, default "white"
+        Contour line colour.
+    contour_linewidth : float, default 0.5
+        Contour line width in points.
+    contour_alpha : float, default 0.6
+        Contour line opacity in ``[0, 1]``.
 
     Returns
     -------
@@ -92,8 +111,22 @@ def plot_overlay(
             f"got {dem.shape} vs {overlay.shape}"
         )
     ax = _ensure_axes(ax)
+    rows, cols = dem.shape
+    width_m = cols * cell_size_m
+    height_m = rows * cell_size_m
+    # imshow extent: (left, right, bottom, top). With origin='upper'
+    # (matplotlib's default) row 0 lives at the top, so bottom=H, top=0.
+    extent = (0.0, width_m, height_m, 0.0)
+
     shade = hillshade(dem, cell_size_m)
-    ax.imshow(shade, cmap="gray", vmin=0.0, vmax=1.0, interpolation="nearest")
+    ax.imshow(
+        shade,
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        interpolation="nearest",
+        extent=extent,
+    )
 
     norm: Normalize
     if log:
@@ -106,15 +139,39 @@ def plot_overlay(
     else:
         norm = Normalize(vmin=vmin, vmax=vmax)
 
-    im = ax.imshow(overlay, cmap=cmap, norm=norm, alpha=alpha, interpolation="nearest")
+    im = ax.imshow(
+        overlay,
+        cmap=cmap,
+        norm=norm,
+        alpha=alpha,
+        interpolation="nearest",
+        extent=extent,
+    )
+    if contours:
+        # Skip drawing on flats; matplotlib emits a warning when min == max.
+        finite = dem[np.isfinite(dem)]
+        if finite.size and float(finite.min()) < float(finite.max()):
+            # Cell-centre coords so the contour grid lines up with the
+            # imshow extent.
+            xs = (np.arange(cols) + 0.5) * cell_size_m
+            ys = (np.arange(rows) + 0.5) * cell_size_m
+            ax.contour(
+                xs,
+                ys,
+                dem,
+                levels=contour_levels,
+                colors=contour_color,
+                linewidths=contour_linewidth,
+                alpha=contour_alpha,
+            )
     if colorbar:
         cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         if label:
             cbar.set_label(label)
     if title:
         ax.set_title(title)
-    ax.set_xticks([])
-    ax.set_yticks([])
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
     return ax
 
 
@@ -127,6 +184,8 @@ def plot_convergence(
     cmap: str | Colormap = "magma",
     alpha: float = 0.6,
     title: str = "Inverted-DEM flow accumulation (convergence)",
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
 ) -> Axes:
     """Inverted-treacle convergence map on a hillshade backdrop.
 
@@ -136,6 +195,10 @@ def plot_convergence(
     the project's headline convergence diagnostic: bright cells mark
     predicted thermal-source convergence under the hydrological
     analogy of CLAUDE.md §2.
+
+    By default, white elevation contours are drawn on top of the
+    convergence overlay so the bright cells can be read against
+    terrain shape.
     """
     inverted = float(np.nanmax(dem)) - dem
     filled = fill_pits(inverted, epsilon=epsilon)
@@ -150,6 +213,8 @@ def plot_convergence(
         alpha=alpha,
         label="upstream cell count (log)",
         title=title,
+        contours=contours,
+        contour_levels=contour_levels,
     )
 
 

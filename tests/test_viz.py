@@ -109,6 +109,24 @@ def test_plot_overlay_smoke() -> None:
     # Two AxesImage artists: hillshade backdrop + overlay.
     assert len(ax.images) == 2
     assert ax.get_title() == "Overlay"
+    assert "m" in ax.get_xlabel()
+    assert "m" in ax.get_ylabel()
+    plt.close(ax.figure)
+
+
+def test_plot_overlay_axes_span_extent_in_metres() -> None:
+    # 20 cells x 5 m/cell = 100 m on each side.
+    dem = _gaussian_hill(20)
+    overlay = np.linspace(0.1, 1.0, dem.size).reshape(dem.shape)
+    ax = plot_overlay(dem, overlay, cell_size_m=5.0)
+    xlo, xhi = ax.get_xlim()
+    ylo, yhi = ax.get_ylim()
+    assert xlo == pytest.approx(0.0)
+    assert xhi == pytest.approx(100.0)
+    # imshow with extent=(0, W, H, 0) leaves the axis with y inverted:
+    # ylo (drawn at the bottom of the figure) is at y=H, yhi at y=0.
+    assert ylo == pytest.approx(100.0)
+    assert yhi == pytest.approx(0.0)
     plt.close(ax.figure)
 
 
@@ -139,6 +157,24 @@ def test_plot_convergence_smoke() -> None:
     dem = _gaussian_hill(21, height=60.0)
     ax = plot_convergence(dem, cell_size_m=1.0)
     assert len(ax.images) == 2
+    # Default plot_convergence draws white elevation contours on top.
+    assert len(ax.collections) > 0
+    plt.close(ax.figure)
+
+
+def test_plot_convergence_contours_can_be_disabled() -> None:
+    dem = _gaussian_hill(15, height=60.0)
+    ax = plot_convergence(dem, cell_size_m=1.0, contours=False)
+    assert len(ax.collections) == 0
+    plt.close(ax.figure)
+
+
+def test_plot_overlay_contours_skipped_on_flat_dem() -> None:
+    # A flat DEM has no contours to draw; matplotlib would warn if asked.
+    flat = np.full((10, 10), 5.0)
+    overlay = np.linspace(0.1, 1.0, flat.size).reshape(flat.shape)
+    ax = plot_overlay(flat, overlay, cell_size_m=1.0, contours=True)
+    assert len(ax.collections) == 0
     plt.close(ax.figure)
 
 
