@@ -14,6 +14,7 @@ from thermal_model.viz import (
     hillshade,
     plot_aspect,
     plot_convergence,
+    plot_heating,
     plot_overlay,
     plot_profile_curvature,
     plot_slope,
@@ -228,3 +229,60 @@ def test_plot_profile_curvature_handles_all_nan_field() -> None:
     ax = plot_profile_curvature(flat, cell_size_m=1.0)
     assert len(ax.images) == 2
     plt.close(ax.figure)
+
+
+# ---------------------------------------------------------------------------
+# Heating
+# ---------------------------------------------------------------------------
+
+
+def test_plot_heating_smoke() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_heating(
+        dem, cell_size_m=5.0, when=when, latitude_deg=54.2, longitude_deg=-2.3
+    )
+    # Hillshade backdrop + heating overlay = 2 images.
+    assert len(ax.images) == 2
+    # Default contours on.
+    assert len(ax.collections) > 0
+    # Axis labels are in metres (project convention).
+    assert ax.get_xlabel() == "x (m)"
+    assert ax.get_ylabel() == "y (m)"
+    plt.close(ax.figure)
+
+
+def test_plot_heating_contours_can_be_disabled() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(16, height=40.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_heating(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        contours=False,
+    )
+    assert len(ax.collections) == 0
+    plt.close(ax.figure)
+
+
+def test_plot_heating_rejects_naive_datetime() -> None:
+    from datetime import datetime
+
+    dem = _gaussian_hill(16, height=40.0)
+    when_naive = datetime(2026, 6, 21, 12, 0)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        plot_heating(
+            dem,
+            cell_size_m=5.0,
+            when=when_naive,
+            latitude_deg=54.2,
+            longitude_deg=-2.3,
+        )

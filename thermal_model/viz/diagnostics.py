@@ -14,6 +14,7 @@ returns the ``Axes`` so the caller can layer further annotations
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -21,12 +22,24 @@ import numpy as np
 from matplotlib.colors import LogNorm, Normalize
 from scipy import ndimage
 
-from thermal_model.physics import fill_pits, flow_accumulation
+from thermal_model.physics import (
+    DEFAULT_ABSORPTIVITY,
+    fill_pits,
+    flow_accumulation,
+    heating_field,
+)
+from thermal_model.solar import (
+    cast_shadow_mask,
+    clear_sky_irradiance,
+    slope_irradiance,
+    solar_position,
+)
 from thermal_model.terrain import aspect, profile_curvature, slope
 from thermal_model.viz.hillshade import hillshade
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
 
     from matplotlib.axes import Axes
     from matplotlib.colors import Colormap
@@ -308,6 +321,139 @@ def plot_aspect(
         alpha=alpha,
         label="aspect (rad)",
         title=title,
+    )
+
+
+def plot_heating(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    ax: Axes | None = None,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    cmap: str | Colormap = "inferno",
+    alpha: float = 0.7,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+    vmin: float | None = 0.0,
+    vmax: float | None = None,
+) -> Axes:
+    """Heating field ``H`` (W/m²) overlaid on a hillshade backdrop.
+
+    Runs the full Phase 2 pipeline:
+
+    1. Slope and aspect from the DEM (Horn 1981).
+    2. Sun position and clear-sky irradiance at ``when`` from
+       :func:`thermal_model.solar.solar_position` and
+       :func:`thermal_model.solar.clear_sky_irradiance`.
+    3. Slope-projected beam + diffuse irradiance via
+       :func:`thermal_model.solar.slope_irradiance`.
+    4. Cast-shadow mask via
+       :func:`thermal_model.solar.cast_shadow_mask` (horizon scan).
+    5. Heating field
+       ``H = absorptivity * (s * I_beam + I_diffuse)`` from
+       :func:`thermal_model.physics.heating_field`.
+
+    The result is overlaid on the Lambertian hillshade with
+    elevation contours, axis units in metres, and a colorbar in
+    W/m².
+
+    Parameters
+    ----------
+    dem : np.ndarray
+        2-D elevation array in metres with NaN nodata.
+    cell_size_m : float
+        Square cell size in metres.
+    when : datetime.datetime
+        Timezone-aware instant for the sun position and irradiance.
+    latitude_deg, longitude_deg : float
+        Site coordinates in degrees (N-positive, E-positive). For a
+        georeferenced DEM, these are typically derived from the
+        DEM's centre via reprojection to EPSG:4326 — see the CLI
+        ``preview`` subcommand.
+    ax : matplotlib.axes.Axes, optional
+        Target axes. If omitted, a new figure and axes are created.
+    elevation_m : float, optional
+        Site elevation in metres. Affects atmospheric airmass in
+        the clear-sky model. Defaults to the median of finite DEM
+        cells.
+    linke_turbidity : float, default 3.0
+        Linke turbidity for the Ineichen-Perez clear-sky model.
+    absorptivity : float, default ``DEFAULT_ABSORPTIVITY`` (0.80)
+        Shortwave absorptivity ``alpha = 1 - albedo``. The Phase 2
+        single-value default; Phase 4 will switch in a per-cell
+        array driven by land cover.
+    cmap : str or Colormap, default "inferno"
+        Colormap for the heating overlay. Dark on cold/shadowed,
+        bright on hot.
+    alpha : float, default 0.7
+        Overlay opacity in ``[0, 1]``.
+    title : str, optional
+        Axes title. Defaults to a one-line summary of the
+        timestamp and the sun's azimuth/altitude.
+    contours : bool, default True
+        Draw elevation contours on top of the heating overlay.
+    contour_levels : int or sequence of float, default 10
+        Number of evenly-spaced contour levels, or an explicit
+        sequence of elevation values in metres.
+    vmin, vmax : float, optional
+        Colorbar limits in W/m². ``vmin`` defaults to ``0`` (a
+        natural floor for solar heating); ``vmax`` defaults to the
+        finite maximum of the heating field.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes containing the plot.
+    """
+    if elevation_m is None:
+        finite = dem[np.isfinite(dem)]
+        if finite.size == 0:
+            raise ValueError("DEM contains no finite cells; cannot derive elevation.")
+        elevation_m = float(np.median(finite))
+
+    sun = solar_position(when, latitude_deg, longitude_deg, elevation_m=elevation_m)
+    cs = clear_sky_irradiance(
+        when,
+        latitude_deg,
+        longitude_deg,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+    )
+    slope_rad = slope(dem, cell_size_m)
+    aspect_rad = aspect(dem, cell_size_m)
+    irr = slope_irradiance(slope_rad, aspect_rad, sun, cs)
+    shadow = cast_shadow_mask(dem, cell_size_m, sun)
+    h = heating_field(irr, shadow, absorptivity=absorptivity)
+
+    if title is None:
+        sun_az_deg = math.degrees(sun.azimuth_rad) % 360.0
+        sun_alt_deg = math.degrees(sun.altitude_rad)
+        title = (
+            f"Heating H (W/m²) — {when.isoformat(timespec='minutes')}\n"
+            f"sun: az={sun_az_deg:.1f}°, alt={sun_alt_deg:.1f}° "
+            f"at ({latitude_deg:.3f}°, {longitude_deg:.3f}°)"
+        )
+
+    return plot_overlay(
+        dem,
+        h,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=False,
+        vmin=vmin,
+        vmax=vmax,
+        alpha=alpha,
+        label="heating (W/m²)",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
     )
 
 

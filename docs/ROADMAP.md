@@ -91,10 +91,65 @@ the Phase 1 convergence layer is wrong.
 
 ## Phase 2 — Solar + heating
 
-- [ ] Sun position + clear-sky irradiance via `pvlib`.
-- [ ] Hillshade and cast-shadow mask via horizon scan.
-- [ ] Heating field $H = I \cdot \alpha \cdot s$.
-- [ ] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed.
+- [x] Sun position + clear-sky irradiance via `pvlib`
+  (`thermal_model/solar/`: `solar_position` returns a frozen
+  `SolarPosition(azimuth_rad, altitude_rad)` in compass-bearing
+  convention matching `terrain.aspect`; `clear_sky_irradiance` uses
+  Ineichen-Perez via `pvlib.location.Location.get_clearsky` with a
+  pinned default Linke turbidity of 3.0 to keep the call offline;
+  `slope_irradiance` projects DNI onto each cell via the
+  cos(angle-of-incidence) formula and adds an isotropic Liu-Jordan
+  diffuse term, returning beam and diffuse separately so the
+  cast-shadow mask can attenuate beam alone in the next step.
+  Anisotropic diffuse and ground-reflected components are deferred).
+- [x] Hillshade and cast-shadow mask via horizon scan
+  (`thermal_model/solar/shadow.py`: `cast_shadow_mask` returns a
+  float64 mask of {0, 1, NaN} from a vectorised horizon scan along
+  the solar azimuth. Steps one cell along the dominant grid axis
+  with a fractional offset on the other, sampling each step's
+  terrain via `scipy.ndimage.map_coordinates` (bilinear) and
+  comparing against the sun ray's height. Stops once the cumulative
+  rise exceeds the DEM's relief — typically a few hundred steps for
+  UK terrain. Snaps near-zero sun-direction components to exact
+  zero to keep cardinal-direction sun on-grid. Below-horizon sun
+  yields all-zero, near-zenith sun yields all-one. Multiplies the
+  beam component of `slope_irradiance` only; diffuse is independent
+  of cast shadows. Distinct from the cosmetic Lambertian
+  `viz.hillshade` used for diagnostic plots).
+- [x] Heating field $H = I \cdot \alpha \cdot s$
+  (`thermal_model/physics/heating.py`: `heating_field` assembles
+  the W/m² ground heating from the slope-projected irradiance, the
+  cast-shadow mask, and a shortwave absorptivity $\alpha$. Cast
+  shadow attenuates the *beam* component only — diffuse comes from
+  the whole sky and is not blocked by a single upwind ridge — so
+  the practical formula is
+  $H = \alpha \cdot (s \cdot I_{\mathrm{beam}} + I_{\mathrm{diffuse}})$.
+  $\alpha$ accepts either a scalar (Phase 2 default) or a per-cell
+  array (Phase 4 land cover). The default `DEFAULT_ABSORPTIVITY =
+  0.80` is the dry grass / heather upland Dales surface from
+  `docs/DATA.md`. Soft (fractional) shadow masks in $[0, 1]$ are
+  accepted to keep the door open for future smooth-occluder
+  models. NaN propagates from any input. A diagnostic plotter
+  `viz.plot_heating` and a `preview --what heating` CLI subcommand
+  drive the full Phase 2 pipeline from a single DEM and ISO
+  `--datetime`; lat/lon default to the DEM centre via reprojection
+  from its CRS, and elevation defaults to the median of finite
+  cells).
+- [x] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed
+  (`thermal_model/physics/coupling.py`: `thermal_potential`
+  computes $P = H^p \cdot C^q$. Default $(p, q) = (0.5, 0.5)$ is
+  the geometric mean from `docs/MODEL.md` §3, chosen because the
+  dynamic range of $C$ (1 to ~$10^5$) dwarfs that of $H$ (0 to
+  ~$10^3$ W/m²) and a plain product would let a single high-$C$
+  cell dominate the ranking. Heating-weighted $(0.7, 0.3)$ matches
+  morning conditions when aspect dominates; convergence-weighted
+  $(0.3, 0.7)$ matches afternoons when the massif is uniformly
+  warm and trigger geometry takes over (`CLAUDE.md` §5). Phase 4
+  will automate this time-of-day weighting; this just exposes the
+  knob. Output is a relative ranking, not a physical quantity —
+  units come out as $(\text{W/m}^2)^p \cdot \text{count}^q$ which
+  is meaningless in absolute terms; display on a percentile
+  scale).
 
 ## Phase 3 — Wind drift + triggers
 
