@@ -12,11 +12,13 @@ from thermal_model.solar.irradiance import (
     slope_irradiance,
 )
 from thermal_model.solar.position import SolarPosition, solar_position
+from thermal_model.solar.shadow import cast_shadow_mask
 
 __all__ = [
     "ClearSkyIrradiance",
     "SlopeIrradiance",
     "SolarPosition",
+    "cast_shadow_mask",
     "clear_sky_irradiance",
     "slope_irradiance",
     "solar_position",

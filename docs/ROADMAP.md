@@ -102,7 +102,20 @@ the Phase 1 convergence layer is wrong.
   diffuse term, returning beam and diffuse separately so the
   cast-shadow mask can attenuate beam alone in the next step.
   Anisotropic diffuse and ground-reflected components are deferred).
-- [ ] Hillshade and cast-shadow mask via horizon scan.
+- [x] Hillshade and cast-shadow mask via horizon scan
+  (`thermal_model/solar/shadow.py`: `cast_shadow_mask` returns a
+  float64 mask of {0, 1, NaN} from a vectorised horizon scan along
+  the solar azimuth. Steps one cell along the dominant grid axis
+  with a fractional offset on the other, sampling each step's
+  terrain via `scipy.ndimage.map_coordinates` (bilinear) and
+  comparing against the sun ray's height. Stops once the cumulative
+  rise exceeds the DEM's relief — typically a few hundred steps for
+  UK terrain. Snaps near-zero sun-direction components to exact
+  zero to keep cardinal-direction sun on-grid. Below-horizon sun
+  yields all-zero, near-zenith sun yields all-one. Multiplies the
+  beam component of `slope_irradiance` only; diffuse is independent
+  of cast shadows. Distinct from the cosmetic Lambertian
+  `viz.hillshade` used for diagnostic plots).
 - [ ] Heating field $H = I \cdot \alpha \cdot s$.
 - [ ] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed.
 
