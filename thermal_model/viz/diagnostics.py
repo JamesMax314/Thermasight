@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm, Normalize
+from scipy import ndimage
 
 from thermal_model.physics import fill_pits, flow_accumulation
 from thermal_model.terrain import aspect, profile_curvature, slope
@@ -180,7 +181,7 @@ def plot_convergence(
     cell_size_m: float,
     *,
     ax: Axes | None = None,
-    epsilon: float = 1e-3,
+    smooth_sigma_m: float = 10.0,
     cmap: str | Colormap = "magma",
     alpha: float = 0.6,
     title: str = "Inverted-DEM flow accumulation (convergence)",
@@ -189,19 +190,57 @@ def plot_convergence(
 ) -> Axes:
     """Inverted-treacle convergence map on a hillshade backdrop.
 
-    Pipelines :func:`thermal_model.physics.fill_pits` (with a small
-    positive ``epsilon`` so internal flats route through), inversion,
-    and :func:`thermal_model.physics.flow_accumulation`. The result is
-    the project's headline convergence diagnostic: bright cells mark
-    predicted thermal-source convergence under the hydrological
-    analogy of CLAUDE.md §2.
+    Pipeline:
+
+    1. Invert the DEM (``max(z) - z``).
+    2. Gaussian-smooth the inverted DEM with a kernel of standard
+       deviation ``smooth_sigma_m`` metres (converted to cells via
+       ``cell_size_m``). Softens abrupt ridge-into-flat-plateau
+       transitions so the priority-flood frontier doesn't enter the
+       flat as a single line, which would otherwise produce
+       parallel-streak artefacts perpendicular to the ridge after
+       flow accumulation. ``0`` disables smoothing.
+    3. Fill closed depressions on the smoothed inverted DEM
+       (:func:`thermal_model.physics.fill_pits`).
+    4. D-infinity flow accumulation
+       (:func:`thermal_model.physics.flow_accumulation`).
+
+    The result is the project's headline convergence diagnostic:
+    bright cells mark predicted thermal-source convergence under the
+    hydrological analogy of CLAUDE.md §2.
+
+    For a more principled (and substantially slower) flat-resolution
+    alternative, run :func:`thermal_model.physics.resolve_flats`
+    between fill and accumulation in your own pipeline; the smoothing
+    here is a fast diagnostic shortcut.
 
     By default, white elevation contours are drawn on top of the
     convergence overlay so the bright cells can be read against
     terrain shape.
     """
+    if smooth_sigma_m < 0:
+        raise ValueError(f"smooth_sigma_m must be non-negative, got {smooth_sigma_m}")
     inverted = float(np.nanmax(dem)) - dem
-    filled = fill_pits(inverted, epsilon=epsilon)
+
+    sigma_cells = smooth_sigma_m / float(cell_size_m)
+    if sigma_cells > 0:
+        nan_mask = np.isnan(inverted)
+        if nan_mask.any():
+            # gaussian_filter doesn't honour NaN, so stamp NaN cells
+            # with the finite mean before convolving and restore NaN
+            # afterwards. The bias near NaN-adjacent cells is bounded
+            # by the kernel scale, which at the default sigma is well
+            # below any real terrain feature.
+            stamped = np.where(nan_mask, float(np.nanmean(inverted)), inverted)
+            smoothed = ndimage.gaussian_filter(stamped, sigma=sigma_cells)
+            smoothed[nan_mask] = np.nan
+        else:
+            smoothed = ndimage.gaussian_filter(inverted, sigma=sigma_cells)
+        prepared = smoothed
+    else:
+        prepared = inverted
+
+    filled = fill_pits(prepared, epsilon=0.0)
     acc = flow_accumulation(filled, cell_size_m)
     return plot_overlay(
         dem,

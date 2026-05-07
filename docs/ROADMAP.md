@@ -53,6 +53,21 @@ the next phase until its predecessor's gate passes.
   assemble whole-hill tiles from EA LIDAR 5 km blocks for the Phase 1
   validation gate; the 256 m fixture used for I/O testing is too small
   to validate convergence against any single thermal location).
+- [x] Streak-artefact mitigation on the convergence map. Pure
+  priority-flood pit-fill leaves filled flat regions with a BFS
+  chamfer-distance gradient; D∞ accumulation on that gradient produces
+  long parallel streaks perpendicular to ridges that abut flat
+  plateaus. Two mitigations available:
+  * `thermal_model.physics.resolve_flats` — Garbrecht & Martz (1997)
+    flat-direction resolution via richdem (`rd.ResolveFlats`); has a
+    stochastic numpy fallback. Principled, but slow on large rasters
+    (~7 min on 75M cells).
+  * `plot_convergence(smooth_sigma_m=...)` — Gaussian blur of the
+    inverted DEM before pit-fill, kernel sigma in metres
+    (default 10 m). Softens the ridge/flat boundary so the BFS
+    frontier doesn't enter the flat along a sharp line. Cheap
+    (~1 s on 75 M cells), good enough for diagnostic plots; replaced
+    ResolveFlats as the `plot_convergence` default after benchmarking.
 
 **Gate**: convergence raster agrees with `docs/VALIDATION.md` on three
 independent test tiles. Document the comparison in `docs/VALIDATION.md`.

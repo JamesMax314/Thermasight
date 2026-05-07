@@ -169,6 +169,27 @@ def test_plot_convergence_contours_can_be_disabled() -> None:
     plt.close(ax.figure)
 
 
+def test_plot_convergence_smoothing_can_be_disabled() -> None:
+    dem = _gaussian_hill(15, height=60.0)
+    ax = plot_convergence(dem, cell_size_m=1.0, smooth_sigma_m=0.0)
+    assert len(ax.images) == 2
+    plt.close(ax.figure)
+
+
+def test_plot_convergence_rejects_negative_sigma() -> None:
+    dem = _gaussian_hill(8, height=20.0)
+    with pytest.raises(ValueError):
+        plot_convergence(dem, cell_size_m=1.0, smooth_sigma_m=-1.0)
+
+
+def test_plot_convergence_smoothing_handles_nan_cells() -> None:
+    dem = _gaussian_hill(12, height=30.0)
+    dem[4, 4] = np.nan
+    ax = plot_convergence(dem, cell_size_m=1.0, smooth_sigma_m=2.0)
+    assert len(ax.images) == 2
+    plt.close(ax.figure)
+
+
 def test_plot_overlay_contours_skipped_on_flat_dem() -> None:
     # A flat DEM has no contours to draw; matplotlib would warn if asked.
     flat = np.full((10, 10), 5.0)

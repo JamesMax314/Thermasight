@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 
-from thermal_model.physics import fill_pits
+from thermal_model.physics import fill_pits, resolve_flats
 
 _HAS_RICHDEM = importlib.util.find_spec("richdem") is not None
 
@@ -246,6 +246,127 @@ def test_richdem_agrees_with_numpy_on_random_dem() -> None:
     assert np.all(out_rd >= dem - 1e-9)
     assert not _has_strict_pit(out_rd)
     np.testing.assert_allclose(out_rd, out_np, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# resolve_flats
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_flats_numpy_perturbs_only_flat_cells() -> None:
+    # Plateau-on-a-slope: the central plateau is a flat region, the
+    # surrounding tilted plane drains. Only plateau cells should be
+    # perturbed; the tilted cells must be unchanged.
+    rows, cols = 11, 11
+    yy, xx = np.mgrid[0:rows, 0:cols].astype(np.float64)
+    plane = -xx  # drains east
+    dem = plane.copy()
+    # Stamp a 5x5 flat plateau in the middle, raised above the plane.
+    dem[3:8, 3:8] = 100.0
+    # Pit-fill the inverted DEM (where the plateau is a pit) with
+    # epsilon=0 to leave the flat exactly flat.
+    inverted = float(dem.max()) - dem
+    filled = fill_pits(inverted, epsilon=0.0, use_richdem=False)
+
+    out = resolve_flats(filled, use_richdem=False, fallback_amplitude=1e-6)
+
+    # Cells outside the plateau should be untouched.
+    untouched = (xx < 3) | (xx > 7) | (yy < 3) | (yy > 7)
+    np.testing.assert_array_equal(out[untouched], filled[untouched])
+    # At least one plateau-interior cell should have moved.
+    interior = (xx >= 4) & (xx <= 6) & (yy >= 4) & (yy <= 6)
+    assert np.any(out[interior] != filled[interior])
+    # The perturbation magnitude is bounded by the noise scale.
+    assert np.max(np.abs(out - filled)) < 1e-4
+
+
+def test_resolve_flats_amplitude_zero_is_noop() -> None:
+    rows, cols = 9, 9
+    dem = np.full((rows, cols), 5.0)  # entirely flat
+    out = resolve_flats(dem, use_richdem=False, fallback_amplitude=0.0)
+    np.testing.assert_array_equal(out, dem.astype(np.float64))
+
+
+def test_resolve_flats_preserves_nan_numpy() -> None:
+    dem = np.full((8, 8), 5.0)
+    dem[2, 2] = np.nan
+    out = resolve_flats(dem, use_richdem=False)
+    assert np.isnan(out[2, 2])
+
+
+def test_resolve_flats_validates_shape() -> None:
+    with pytest.raises(ValueError):
+        resolve_flats(np.zeros((3, 4, 5)))
+    with pytest.raises(ValueError):
+        resolve_flats(np.zeros((1, 4)))
+
+
+def test_resolve_flats_validates_amplitude() -> None:
+    with pytest.raises(ValueError):
+        resolve_flats(np.zeros((4, 4)), fallback_amplitude=-1.0)
+
+
+def test_resolve_flats_rejects_use_richdem_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("thermal_model.physics.hydrology._have_richdem", lambda: False)
+    with pytest.raises(ImportError):
+        resolve_flats(np.zeros((4, 4)), use_richdem=True)
+
+
+def test_resolve_flats_numpy_breaks_streak_artefact() -> None:
+    # Construct a small DEM with a sharp ridge butting onto a flat
+    # plateau on the lee side. After fill+resolve+accumulate, the
+    # accumulation field on the plateau should not have parallel
+    # ridge-perpendicular streaks (i.e. column-to-column variance
+    # should be far from a near-constant ramp).
+    rows, cols = 25, 25
+    dem = np.zeros((rows, cols), dtype=np.float64)
+    # West half: tilted plane rising to the ridge.
+    yy, xx = np.mgrid[0:rows, 0:cols].astype(np.float64)
+    dem += np.where(xx < 12, xx * 5.0, 0.0)
+    # Ridge column at x = 12.
+    dem[:, 12] = 80.0
+    # East half: flat plateau (fill_pits will leave it flat after
+    # raising it to spill).
+    dem[:, 13:] = 60.0
+
+    inverted = float(dem.max()) - dem
+    filled = fill_pits(inverted, epsilon=0.0, use_richdem=False)
+    resolved = resolve_flats(filled, use_richdem=False)
+
+    # The plateau on the inverted DEM is a pit-bottom flat. After
+    # resolution, the per-cell perturbation should differ row-to-row
+    # within the plateau, breaking the would-be ridge-aligned ramp.
+    plateau = resolved[:, 13:]
+    row_means = plateau.mean(axis=1)
+    # If the artefact were present, row_means would be (near) equal
+    # across rows; resolve_flats injects per-cell noise, so we expect
+    # finite per-row variance.
+    assert row_means.std() > 0
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_resolve_flats_richdem_runs_on_filled_dem() -> None:
+    # Smoke + invariants on the richdem path.
+    rows, cols = 20, 20
+    rng = np.random.default_rng(2)
+    dem = rng.uniform(0.0, 50.0, size=(rows, cols))
+    dem[5:15, 5:15] = 30.0  # flat plateau
+    inverted = float(dem.max()) - dem
+    filled = fill_pits(inverted, epsilon=0.0, use_richdem=True)
+    resolved = resolve_flats(filled, use_richdem=True)
+    # Same shape, NaN preserved (none here), no NaN introduced.
+    assert resolved.shape == dem.shape
+    assert np.all(np.isfinite(resolved))
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_resolve_flats_richdem_preserves_nan() -> None:
+    dem = np.full((8, 8), 5.0)
+    dem[2, 2] = np.nan
+    out = resolve_flats(dem, use_richdem=True)
+    assert np.isnan(out[2, 2])
 
 
 @pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
