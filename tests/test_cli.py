@@ -79,6 +79,84 @@ def test_preview_save_writes_png_for_each_view(
     assert out.stat().st_size > 0
 
 
+def test_preview_heating_writes_png_with_dem_centre_lat_lon(
+    synthetic_dem_path: Path, tmp_path: Path
+) -> None:
+    # The synthetic DEM is in EPSG:27700; the CLI should derive lat/lon
+    # from its centre via reprojection so the user only has to provide
+    # --datetime.
+    out = tmp_path / "heating.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            "heating",
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_preview_heating_writes_png_with_explicit_lat_lon(
+    synthetic_dem_path: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "heating_explicit.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            "heating",
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--lat",
+            "54.2",
+            "--lon",
+            "-2.3",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+
+
+def test_preview_heating_requires_datetime(synthetic_dem_path: Path) -> None:
+    with pytest.raises(SystemExit, match="--datetime"):
+        main(
+            [
+                "preview",
+                "--dem",
+                str(synthetic_dem_path),
+                "--what",
+                "heating",
+            ]
+        )
+
+
+def test_preview_heating_rejects_naive_datetime(synthetic_dem_path: Path) -> None:
+    with pytest.raises(SystemExit, match="timezone-naive"):
+        main(
+            [
+                "preview",
+                "--dem",
+                str(synthetic_dem_path),
+                "--what",
+                "heating",
+                "--datetime",
+                "2026-06-21T12:00:00",
+            ]
+        )
+
+
 def test_mosaic_cli_writes_output(tmp_path: Path, synthetic_dem_path: Path) -> None:
     # The synthetic_dem fixture is a single tile; mosaic-of-one is a
     # valid (degenerate) call and the smallest end-to-end exercise.

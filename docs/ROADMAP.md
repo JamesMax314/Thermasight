@@ -129,7 +129,12 @@ the Phase 1 convergence layer is wrong.
   0.80` is the dry grass / heather upland Dales surface from
   `docs/DATA.md`. Soft (fractional) shadow masks in $[0, 1]$ are
   accepted to keep the door open for future smooth-occluder
-  models. NaN propagates from any input).
+  models. NaN propagates from any input. A diagnostic plotter
+  `viz.plot_heating` and a `preview --what heating` CLI subcommand
+  drive the full Phase 2 pipeline from a single DEM and ISO
+  `--datetime`; lat/lon default to the DEM centre via reprojection
+  from its CRS, and elevation defaults to the median of finite
+  cells).
 - [x] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed
   (`thermal_model/physics/coupling.py`: `thermal_potential`
   computes $P = H^p \cdot C^q$. Default $(p, q) = (0.5, 0.5)$ is

@@ -13,6 +13,7 @@ under ``thermal_model.solar``; the two are intentionally distinct.
 from thermal_model.viz.diagnostics import (
     plot_aspect,
     plot_convergence,
+    plot_heating,
     plot_overlay,
     plot_profile_curvature,
     plot_slope,
@@ -23,6 +24,7 @@ __all__ = [
     "hillshade",
     "plot_aspect",
     "plot_convergence",
+    "plot_heating",
     "plot_overlay",
     "plot_profile_curvature",
     "plot_slope",

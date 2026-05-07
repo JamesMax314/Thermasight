@@ -12,8 +12,14 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-_PREVIEW_CHOICES = ("convergence", "slope", "aspect", "curvature", "all")
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from thermal_model.io.dem import DEM
+
+_PREVIEW_CHOICES = ("convergence", "slope", "aspect", "curvature", "heating", "all")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,6 +61,58 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=120,
         help="Figure DPI (default: 120).",
+    )
+    preview.add_argument(
+        "--datetime",
+        dest="when",
+        type=str,
+        default=None,
+        help=(
+            "Timezone-aware ISO timestamp (e.g. '2026-05-06T13:00:00+01:00'). "
+            "Required for --what heating; ignored otherwise."
+        ),
+    )
+    preview.add_argument(
+        "--lat",
+        type=float,
+        default=None,
+        help=(
+            "Latitude in degrees (N-positive). Defaults to the centre of the "
+            "DEM, reprojected from the DEM's CRS."
+        ),
+    )
+    preview.add_argument(
+        "--lon",
+        type=float,
+        default=None,
+        help=(
+            "Longitude in degrees (E-positive). Defaults to the centre of the "
+            "DEM, reprojected from the DEM's CRS."
+        ),
+    )
+    preview.add_argument(
+        "--elevation",
+        type=float,
+        default=None,
+        help=(
+            "Site elevation in metres for the clear-sky model. Defaults to "
+            "the median of finite DEM cells."
+        ),
+    )
+    preview.add_argument(
+        "--linke-turbidity",
+        type=float,
+        default=3.0,
+        help="Linke turbidity for the Ineichen-Perez clear-sky model (default 3.0).",
+    )
+    preview.add_argument(
+        "--absorptivity",
+        type=float,
+        default=None,
+        help=(
+            "Shortwave absorptivity alpha = 1 - albedo. Defaults to the "
+            "upland Dales value from docs/DATA.md (0.80)."
+        ),
     )
     preview.set_defaults(func=_cmd_preview)
 
@@ -98,6 +156,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     from thermal_model.viz import (
         plot_aspect,
         plot_convergence,
+        plot_heating,
         plot_profile_curvature,
         plot_slope,
     )
@@ -111,6 +170,10 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         plot_profile_curvature(dem.elevation_m, dem.cell_size_m, ax=axes[1, 0])
         plot_convergence(dem.elevation_m, dem.cell_size_m, ax=axes[1, 1])
         fig.suptitle(str(args.dem))
+    elif args.what == "heating":
+        when, lat, lon, kwargs = _resolve_heating_args(args, dem)
+        fig, ax = plt.subplots(figsize=(9, 8), dpi=args.dpi)
+        plot_heating(dem.elevation_m, dem.cell_size_m, when, lat, lon, ax=ax, **kwargs)
     else:
         plotter = {
             "convergence": plot_convergence,
@@ -129,6 +192,62 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     else:
         plt.show()
     return 0
+
+
+def _resolve_heating_args(
+    args: argparse.Namespace, dem: DEM
+) -> tuple[datetime, float, float, dict[str, Any]]:
+    """Validate and fill in heating-specific args from the DEM context.
+
+    Returns ``(when, latitude_deg, longitude_deg, kwargs_for_plot_heating)``.
+    Raises ``SystemExit`` on missing inputs we can't reasonably default.
+    """
+    from datetime import datetime as _datetime
+
+    from pyproj import Transformer
+
+    from thermal_model.physics import DEFAULT_ABSORPTIVITY
+
+    if args.when is None:
+        raise SystemExit(
+            "preview --what heating requires --datetime "
+            "(e.g. '2026-05-06T13:00:00+01:00')"
+        )
+    try:
+        when = _datetime.fromisoformat(args.when)
+    except ValueError as exc:
+        raise SystemExit(f"could not parse --datetime {args.when!r}: {exc}") from exc
+    if when.tzinfo is None:
+        raise SystemExit(
+            f"--datetime {args.when!r} is timezone-naive; "
+            "include a UTC offset such as '+01:00' or 'Z'"
+        )
+
+    lat = args.lat
+    lon = args.lon
+    if lat is None or lon is None:
+        if dem.crs is None:
+            raise SystemExit(
+                "DEM has no CRS; pass --lat and --lon explicitly for --what heating"
+            )
+        rows, cols = dem.elevation_m.shape
+        centre_x_proj, centre_y_proj = dem.transform * (cols / 2.0, rows / 2.0)
+        transformer = Transformer.from_crs(dem.crs, "EPSG:4326", always_xy=True)
+        centre_lon, centre_lat = transformer.transform(centre_x_proj, centre_y_proj)
+        if lat is None:
+            lat = float(centre_lat)
+        if lon is None:
+            lon = float(centre_lon)
+
+    kwargs: dict[str, object] = {
+        "linke_turbidity": float(args.linke_turbidity),
+        "absorptivity": float(
+            args.absorptivity if args.absorptivity is not None else DEFAULT_ABSORPTIVITY
+        ),
+    }
+    if args.elevation is not None:
+        kwargs["elevation_m"] = float(args.elevation)
+    return when, float(lat), float(lon), kwargs
 
 
 def _cmd_mosaic(args: argparse.Namespace) -> int:

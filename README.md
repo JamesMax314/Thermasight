@@ -44,16 +44,51 @@ real terrain.
 # Open a window with the convergence overlay (the headline diagnostic)
 python -m thermal_model preview --dem data/fixtures/wild_boar_fell_east_256_1m.tif
 
-# Pick a single view: convergence | slope | aspect | curvature | all
+# Pick a single view: convergence | slope | aspect | curvature | heating | all
 python -m thermal_model preview --dem <path> --what slope
 
 # Save a 2×2 panel to a PNG instead of opening a window
 python -m thermal_model preview --dem <path> --what all --save out.png --dpi 150
 ```
 
+### Heating-field preview
+
+`--what heating` runs the full Phase 2 solar pipeline (slope and aspect →
+sun position → clear-sky irradiance → slope projection → cast-shadow mask
+→ heating field) and overlays the per-cell heating in W/m² on the
+hillshade with elevation contours.
+
+It needs a timezone-aware ISO timestamp. Latitude and longitude default to
+the DEM's centre, reprojected from the DEM's CRS, so for the project's
+BNG-native LIDAR you only have to pass `--datetime`:
+
+```bash
+python -m thermal_model preview \
+  --dem data/fixtures/wild_boar_fell_east_256_1m.tif \
+  --what heating \
+  --datetime "2026-05-06T13:00:00+01:00" \
+  --save heating.png
+```
+
+Override defaults if needed:
+
+```bash
+python -m thermal_model preview --dem <path> --what heating \
+  --datetime "2026-05-06T13:00:00+01:00" \
+  --lat 54.20 --lon -2.30 \
+  --elevation 600 \
+  --linke-turbidity 3.0 \
+  --absorptivity 0.80
+```
+
+`--linke-turbidity` controls the Ineichen-Perez clear-sky model
+(default 3.0 — temperate clear day; 2 is very clean cold air, 5 is
+hazy). `--absorptivity` is the surface absorptivity α = 1 − albedo
+(default 0.80, dry grass / heather; bog is ~0.4 — see `docs/DATA.md`).
+
 `python -m thermal_model preview --help` lists all options.
 
 ## Status
 
-Phase 1 (terrain morphometrics + inverted-DEM convergence). See
-`docs/ROADMAP.md` for the phased plan.
+Phase 2 (solar + heating) feature-complete. See `docs/ROADMAP.md` for
+the phased plan.
