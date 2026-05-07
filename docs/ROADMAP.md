@@ -130,7 +130,21 @@ the Phase 1 convergence layer is wrong.
   `docs/DATA.md`. Soft (fractional) shadow masks in $[0, 1]$ are
   accepted to keep the door open for future smooth-occluder
   models. NaN propagates from any input).
-- [ ] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed.
+- [x] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed
+  (`thermal_model/physics/coupling.py`: `thermal_potential`
+  computes $P = H^p \cdot C^q$. Default $(p, q) = (0.5, 0.5)$ is
+  the geometric mean from `docs/MODEL.md` §3, chosen because the
+  dynamic range of $C$ (1 to ~$10^5$) dwarfs that of $H$ (0 to
+  ~$10^3$ W/m²) and a plain product would let a single high-$C$
+  cell dominate the ranking. Heating-weighted $(0.7, 0.3)$ matches
+  morning conditions when aspect dominates; convergence-weighted
+  $(0.3, 0.7)$ matches afternoons when the massif is uniformly
+  warm and trigger geometry takes over (`CLAUDE.md` §5). Phase 4
+  will automate this time-of-day weighting; this just exposes the
+  knob. Output is a relative ranking, not a physical quantity —
+  units come out as $(\text{W/m}^2)^p \cdot \text{count}^q$ which
+  is meaningless in absolute terms; display on a percentile
+  scale).
 
 ## Phase 3 — Wind drift + triggers
 
