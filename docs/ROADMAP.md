@@ -91,7 +91,17 @@ the Phase 1 convergence layer is wrong.
 
 ## Phase 2 — Solar + heating
 
-- [ ] Sun position + clear-sky irradiance via `pvlib`.
+- [x] Sun position + clear-sky irradiance via `pvlib`
+  (`thermal_model/solar/`: `solar_position` returns a frozen
+  `SolarPosition(azimuth_rad, altitude_rad)` in compass-bearing
+  convention matching `terrain.aspect`; `clear_sky_irradiance` uses
+  Ineichen-Perez via `pvlib.location.Location.get_clearsky` with a
+  pinned default Linke turbidity of 3.0 to keep the call offline;
+  `slope_irradiance` projects DNI onto each cell via the
+  cos(angle-of-incidence) formula and adds an isotropic Liu-Jordan
+  diffuse term, returning beam and diffuse separately so the
+  cast-shadow mask can attenuate beam alone in the next step.
+  Anisotropic diffuse and ground-reflected components are deferred).
 - [ ] Hillshade and cast-shadow mask via horizon scan.
 - [ ] Heating field $H = I \cdot \alpha \cdot s$.
 - [ ] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed.
