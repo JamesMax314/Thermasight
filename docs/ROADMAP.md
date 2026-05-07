@@ -116,7 +116,20 @@ the Phase 1 convergence layer is wrong.
   beam component of `slope_irradiance` only; diffuse is independent
   of cast shadows. Distinct from the cosmetic Lambertian
   `viz.hillshade` used for diagnostic plots).
-- [ ] Heating field $H = I \cdot \alpha \cdot s$.
+- [x] Heating field $H = I \cdot \alpha \cdot s$
+  (`thermal_model/physics/heating.py`: `heating_field` assembles
+  the W/m² ground heating from the slope-projected irradiance, the
+  cast-shadow mask, and a shortwave absorptivity $\alpha$. Cast
+  shadow attenuates the *beam* component only — diffuse comes from
+  the whole sky and is not blocked by a single upwind ridge — so
+  the practical formula is
+  $H = \alpha \cdot (s \cdot I_{\mathrm{beam}} + I_{\mathrm{diffuse}})$.
+  $\alpha$ accepts either a scalar (Phase 2 default) or a per-cell
+  array (Phase 4 land cover). The default `DEFAULT_ABSORPTIVITY =
+  0.80` is the dry grass / heather upland Dales surface from
+  `docs/DATA.md`. Soft (fractional) shadow masks in $[0, 1]$ are
+  accepted to keep the door open for future smooth-occluder
+  models. NaN propagates from any input).
 - [ ] Coupling $P = \sqrt{H \cdot C}$ with $(p, q)$ exposed.
 
 ## Phase 3 — Wind drift + triggers
