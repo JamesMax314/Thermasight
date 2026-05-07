@@ -40,6 +40,14 @@ the next phase until its predecessor's gate passes.
   forward from Phase 3 since the diagnostic plots are not useful
   without a way to run them on a tile).
 - [ ] Property tests: rotation/scaling invariants.
+- [x] DEM mosaic pipeline (`thermal_model/io/mosaic.py`: `mosaic_dems()`
+  wrapping `rasterio.merge.merge` with project on-disk conventions:
+  `nodata=-9999`, deflate-compressed tiled float32. Validates CRS and
+  cell-size consistency across inputs before merging. Drivable from
+  `python -m thermal_model mosaic`. Pulled in from CLAUDE.md §9 to
+  assemble whole-hill tiles from EA LIDAR 5 km blocks for the Phase 1
+  validation gate; the 256 m fixture used for I/O testing is too small
+  to validate convergence against any single thermal location).
 
 **Gate**: convergence raster agrees with `docs/VALIDATION.md` on three
 independent test tiles. Document the comparison in `docs/VALIDATION.md`.

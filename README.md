@@ -17,6 +17,23 @@ pip install -e .
 pytest
 ```
 
+## Mosaic LIDAR tiles
+
+EA LIDAR Composite ships as 5 km × 5 km blocks; for whole-hill convergence
+analysis, stitch a set of adjacent blocks into a single mosaic. Inputs must
+share a CRS and cell size.
+
+```bash
+# Mosaic the 12 Wild Boar / Mallerstang tiles (15 km × 20 km, 1 m, ~600 MB)
+python -m thermal_model mosaic \
+  --inputs data/raw/*/*.tif \
+  --output data/processed/mallerstang_wildboar_1m.tif
+```
+
+Output is deflate-compressed float32 with `nodata=-9999`. Pass `--overwrite`
+to replace an existing output. `python -m thermal_model mosaic --help` lists
+all options.
+
 ## Preview a tile
 
 The `preview` subcommand renders a hillshade-backed diagnostic plot of a DEM.

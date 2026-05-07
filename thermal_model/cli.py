@@ -57,6 +57,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Figure DPI (default: 120).",
     )
     preview.set_defaults(func=_cmd_preview)
+
+    mosaic = subparsers.add_parser(
+        "mosaic",
+        help="Stitch a set of adjacent DEM tiles into a single GeoTIFF.",
+        description=(
+            "Mosaic a set of single-band DEM tiles into one GeoTIFF. All "
+            "inputs must share a CRS and cell size. Output uses -9999 "
+            "nodata and deflate compression to match the project on-disk "
+            "convention."
+        ),
+    )
+    mosaic.add_argument(
+        "--inputs",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="Paths to input DEM tiles (shell globs are expanded by the shell).",
+    )
+    mosaic.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path to write the mosaicked GeoTIFF.",
+    )
+    mosaic.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace --output if it exists.",
+    )
+    mosaic.set_defaults(func=_cmd_mosaic)
     return parser
 
 
@@ -98,6 +128,14 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         plt.close(fig)
     else:
         plt.show()
+    return 0
+
+
+def _cmd_mosaic(args: argparse.Namespace) -> int:
+    from thermal_model.io import mosaic_dems
+
+    out = mosaic_dems(args.inputs, args.output, overwrite=args.overwrite)
+    print(f"wrote {out}")
     return 0
 
 

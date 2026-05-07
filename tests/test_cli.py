@@ -77,3 +77,46 @@ def test_preview_save_writes_png_for_each_view(
     assert rc == 0
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_mosaic_cli_writes_output(tmp_path: Path, synthetic_dem_path: Path) -> None:
+    # The synthetic_dem fixture is a single tile; mosaic-of-one is a
+    # valid (degenerate) call and the smallest end-to-end exercise.
+    out = tmp_path / "mosaic.tif"
+    rc = main(
+        [
+            "mosaic",
+            "--inputs",
+            str(synthetic_dem_path),
+            "--output",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_mosaic_cli_refuses_overwrite(tmp_path: Path, synthetic_dem_path: Path) -> None:
+    out = tmp_path / "mosaic.tif"
+    main(["mosaic", "--inputs", str(synthetic_dem_path), "--output", str(out)])
+    with pytest.raises(FileExistsError):
+        main(["mosaic", "--inputs", str(synthetic_dem_path), "--output", str(out)])
+
+
+def test_mosaic_cli_overwrite_flag_works(
+    tmp_path: Path, synthetic_dem_path: Path
+) -> None:
+    out = tmp_path / "mosaic.tif"
+    main(["mosaic", "--inputs", str(synthetic_dem_path), "--output", str(out)])
+    rc = main(
+        [
+            "mosaic",
+            "--inputs",
+            str(synthetic_dem_path),
+            "--output",
+            str(out),
+            "--overwrite",
+        ]
+    )
+    assert rc == 0
