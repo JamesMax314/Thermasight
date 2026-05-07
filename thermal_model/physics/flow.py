@@ -74,6 +74,26 @@ def _validate_dem(dem: np.ndarray, cell_size_m: float) -> None:
         raise ValueError(f"DEM must be at least 2x2, got {dem.shape}")
 
 
+def _validate_weights(dem: np.ndarray, weights: np.ndarray) -> None:
+    """Pin the weights contract.
+
+    Weights must be 2-D, the same shape as ``dem``, and **finite at
+    every cell where ``dem`` is finite**. NaN is allowed (and recommended
+    as the nodata sentinel) at cells where ``dem`` itself is NaN; those
+    cells are nodata in the routing and contribute nothing regardless.
+    Inf is never allowed at a finite-dem cell — it would silently
+    poison the accumulation through the topological pass.
+    """
+    if weights.shape != dem.shape:
+        raise ValueError(f"weights shape {weights.shape} != dem shape {dem.shape}")
+    finite_dem = ~np.isnan(dem)
+    if not np.all(np.isfinite(weights[finite_dem])):
+        raise ValueError(
+            "weights must be finite (no NaN, no Inf) at every cell where "
+            "dem is finite. NaN is permitted only at NaN-dem cells."
+        )
+
+
 def _facet_slopes(dem: np.ndarray, cell_size_m: float) -> tuple[np.ndarray, np.ndarray]:
     """Per-facet slope and within-facet angle for every cell.
 
@@ -306,9 +326,14 @@ def flow_accumulation(
         used for direction selection; the accumulation itself is
         cell-count-based unless ``weights`` are supplied.
     weights : np.ndarray, optional
-        Per-cell starting contribution. Same shape as ``dem``. If
-        omitted, every finite cell contributes ``1.0`` (i.e. the result
-        is upstream cell count, including self).
+        Per-cell starting contribution. Same shape as ``dem``. Must be
+        finite (no NaN, no Inf) at every cell where ``dem`` is finite;
+        NaN is permitted at NaN-``dem`` cells and is the recommended
+        nodata convention for weight rasters. The contract is checked
+        on entry; a violation raises ``ValueError`` rather than
+        silently corrupting the topological pass. If omitted, every
+        finite cell contributes ``1.0`` (i.e. the result is upstream
+        cell count, including self).
     use_richdem : bool, optional
         ``True`` to require the richdem backend (raises ``ImportError``
         if unavailable), ``False`` to force the numpy fallback,
@@ -336,6 +361,8 @@ def flow_accumulation(
     epsilon.
     """
     _validate_dem(dem, cell_size_m)
+    if weights is not None:
+        _validate_weights(dem, weights)
 
     if use_richdem is True and not _have_richdem():
         raise ImportError(

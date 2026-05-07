@@ -146,6 +146,54 @@ def test_accumulation_scales_linearly_with_weights() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Weights contract: finite where dem is finite, NaN allowed only at NaN-dem
+# cells. Inf/NaN at a finite-dem cell would silently corrupt the
+# topological pass; the public API must reject them.
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_nan_weights_at_finite_dem_cell() -> None:
+    dem = np.zeros((5, 5))
+    weights = np.ones_like(dem)
+    weights[2, 2] = np.nan
+    with pytest.raises(ValueError, match="weights must be finite"):
+        flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=False)
+
+
+def test_rejects_inf_weights_at_finite_dem_cell() -> None:
+    dem = np.zeros((5, 5))
+    weights = np.ones_like(dem)
+    weights[1, 3] = np.inf
+    with pytest.raises(ValueError, match="weights must be finite"):
+        flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=False)
+
+
+def test_accepts_nan_weights_at_nan_dem_cells() -> None:
+    # The recommended convention: weights mirror the dem's nodata. NaN
+    # at NaN-dem cells must pass validation and produce NaN output
+    # there, with finite output elsewhere.
+    n = 6
+    cols = np.arange(n, dtype=np.float64)
+    dem = np.broadcast_to(-cols, (n, n)).astype(np.float64).copy()
+    dem[2, 2] = np.nan
+    weights = np.full_like(dem, 2.0)
+    weights[2, 2] = np.nan
+    acc = flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=False)
+    assert np.isnan(acc[2, 2])
+    assert np.all(np.isfinite(acc[~np.isnan(dem)]))
+
+
+def test_rejects_mismatched_weights_shape_via_public_api() -> None:
+    # The shape check inside _flow_accumulation_numpy is already
+    # covered; this version exercises the public entrypoint's
+    # contract enforcement (which runs before backend dispatch).
+    dem = np.zeros((5, 5))
+    bad = np.zeros((4, 5))
+    with pytest.raises(ValueError, match="weights shape"):
+        flow_accumulation(dem, cell_size_m=1.0, weights=bad, use_richdem=False)
+
+
+# ---------------------------------------------------------------------------
 # NaN handling
 # ---------------------------------------------------------------------------
 
@@ -242,6 +290,65 @@ def test_richdem_path_runs_and_agrees_in_broad_strokes() -> None:
     # Both should sum upstream cells; totals should be in the same
     # ballpark (within 20%) on a small random fixture. Pixel-scale
     # disagreement is allowed because of flat-resolution differences.
+    sum_np = float(np.nansum(acc_np))
+    sum_rd = float(np.nansum(acc_rd))
+    assert sum_rd == pytest.approx(sum_np, rel=0.2)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_unit_weights_match_default() -> None:
+    # The Phase 3 wiring depends on richdem actually honouring
+    # weights=. If it silently ignored them, weights=ones would still
+    # match the default but weights=k*ones would also match the
+    # default - that case is pinned in the next test.
+    rng = np.random.default_rng(6)
+    dem = rng.uniform(0.0, 30.0, size=(12, 12))
+    acc_default = flow_accumulation(dem, cell_size_m=1.0, use_richdem=True)
+    acc_unit = flow_accumulation(
+        dem, cell_size_m=1.0, weights=np.ones_like(dem), use_richdem=True
+    )
+    np.testing.assert_allclose(acc_default, acc_unit, atol=1e-9)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_path_scales_linearly_with_weights() -> None:
+    # 3x weights -> 3x accumulation. This is the test that catches a
+    # silently-ignored weights kwarg (the failure mode the ROADMAP
+    # flagged before wiring heating into the routing).
+    rng = np.random.default_rng(7)
+    dem = rng.uniform(0.0, 30.0, size=(12, 12))
+    w1 = np.full_like(dem, 1.0)
+    w3 = np.full_like(dem, 3.0)
+    a1 = flow_accumulation(dem, cell_size_m=1.0, weights=w1, use_richdem=True)
+    a3 = flow_accumulation(dem, cell_size_m=1.0, weights=w3, use_richdem=True)
+    np.testing.assert_allclose(a3, 3.0 * a1, atol=1e-9)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_rejects_nan_weights_at_finite_dem_cell() -> None:
+    # Contract is enforced in the public API before backend dispatch,
+    # so it must apply on the richdem path too.
+    dem = np.zeros((5, 5))
+    weights = np.ones_like(dem)
+    weights[2, 2] = np.nan
+    with pytest.raises(ValueError, match="weights must be finite"):
+        flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=True)
+
+
+@pytest.mark.skipif(not _HAS_RICHDEM, reason="richdem not installed")
+def test_richdem_and_numpy_agree_under_random_weights() -> None:
+    # The Phase 3 trigger pipeline routes the heating field as the
+    # weight raster, so disagreement between backends under non-trivial
+    # weights would be a Phase 3 hazard. Match the broad-strokes
+    # tolerance from the unweighted smoke test (within 20%).
+    from thermal_model.physics import fill_pits
+
+    rng = np.random.default_rng(8)
+    dem = fill_pits(rng.uniform(0.0, 30.0, size=(16, 16)), epsilon=1e-3)
+    weights = rng.uniform(0.5, 1.5, size=dem.shape)
+    acc_np = flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=False)
+    acc_rd = flow_accumulation(dem, cell_size_m=1.0, weights=weights, use_richdem=True)
+    assert acc_np.shape == acc_rd.shape == dem.shape
     sum_np = float(np.nansum(acc_np))
     sum_rd = float(np.nansum(acc_rd))
     assert sum_rd == pytest.approx(sum_np, rel=0.2)

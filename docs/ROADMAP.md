@@ -180,14 +180,22 @@ step in the main pipeline.
   preservation, and a hypothesis property that the per-metre slope
   along the wind-to direction is exactly $k|u|$ regardless of
   cell size or grid shape.
-- [ ] Confirm `physics.flow_accumulation` accepts a `weights`
-  raster on both the `richdem` and numpy fallback paths (Phase 1
-  task list claims it does — verify on the installed `richdem`
-  version before wiring the pipeline). If `richdem`'s
-  `FlowAccumulation` exposes `weights=`, use it directly; if not,
-  obtain D∞ proportions via `rd.FlowProportions` and run the
-  weighted topological pass through the existing numpy reference
-  path.
+- [x] Confirm `physics.flow_accumulation` accepts a `weights`
+  raster on both the `richdem` and numpy fallback paths.
+  Verified on the installed `richdem`: `FlowAccumulation` exposes
+  `weights=`, and a unit-vs-3× weights probe shows the kwarg is
+  honoured exactly (`3·w → 3·acc`), so the existing direct-call
+  wiring in `_flow_accumulation_richdem` is correct and the
+  `FlowProportions` hybrid is not needed. Pinned a public weights
+  contract in `physics.flow._validate_weights`: `weights.shape ==
+  dem.shape`, finite (no NaN, no Inf) at every finite-`dem` cell,
+  NaN allowed only at NaN-`dem` cells. The contract is checked in
+  the public `flow_accumulation` entrypoint before backend
+  dispatch, replacing the previous silent NaN-masking on the
+  richdem branch. Tests in `test_physics_flow.py` pin the
+  contract on both backends and add cross-backend agreement under
+  random weights (within the same 20 % broad-strokes tolerance as
+  the existing unweighted smoke test).
 - [ ] `physics/pipeline.py` — `run_model(...)` orchestrating the
   §6-of-`model_correction.md` block: smooth → wind tilt → heating
   field from raw DEM → invert + pit-fill + D∞ accumulation
