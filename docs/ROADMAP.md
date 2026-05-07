@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current phase: Phase 0 — repo skeleton, I/O, fixtures, CI.**
+**Current phase: Phase 1 — terrain morphometrics + inverted-DEM convergence.**
 
 Update this header when a phase completes. Do not skip phases. Do not start
 the next phase until its predecessor's gate passes.
@@ -26,7 +26,11 @@ the next phase until its predecessor's gate passes.
 
 - [x] Slope, aspect, and profile curvature (Horn / Zevenbergen & Thorne).
 - [x] Pit-fill on inverted DEM (priority-flood, Barnes et al. 2014).
-- [ ] D∞ flow accumulation via `richdem` with a numpy fallback.
+- [x] D∞ flow accumulation via `richdem` with a numpy fallback
+  (`thermal_model/physics/flow.py`: `dinf_flow_directions` and
+  `flow_accumulation`; Tarboton 1997, eight-facet selection,
+  topological pass in descending elevation; weights, NaN nodata,
+  auto-selecting backend; reference implementation is the numpy path).
 - [ ] Diagnostic plots overlaid on hillshade.
 - [ ] Property tests: rotation/scaling invariants.
 
