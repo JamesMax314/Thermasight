@@ -1,13 +1,15 @@
 # Roadmap
 
-**Current phase: Phase 3 — wind tilt + ground-level triggers.**
+**Current phase: Phase 4 — land cover + time-of-day.**
 
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
-on the same date — the original "wind drift" framing has been
-superseded by the ground-level trigger-prediction model in
-`docs/model_correction.md`. Update this header when a phase completes.
-Do not skip phases. Do not start the next phase until its
-predecessor's gate passes.
+on the same date — the original "wind drift" framing was superseded
+by the ground-level trigger-prediction model in
+`docs/model_correction.md` — and closed 2026-05-08 with the
+mirror-spur pytest gate plus operator visual confirmation on the
+Wild Boar Fell + Mallerstang mosaic (see Phase 3 § Validation log).
+Update this header when a phase completes. Do not skip phases. Do
+not start the next phase until its predecessor's gate passes.
 
 ---
 
@@ -196,33 +198,66 @@ step in the main pipeline.
   contract on both backends and add cross-backend agreement under
   random weights (within the same 20 % broad-strokes tolerance as
   the existing unweighted smoke test).
-- [ ] `physics/pipeline.py` — `run_model(...)` orchestrating the
+- [x] `physics/pipeline.py` — `run_model(...)` orchestrating the
   §6-of-`model_correction.md` block: smooth → wind tilt → heating
-  field from raw DEM → invert + pit-fill + D∞ accumulation
-  **weighted by heating** → multiply by normalised
-  max(profile_curv, 0) → multiply by min-slope mask (~2.5°).
-  Returns the trigger-potential raster and intermediate
-  diagnostics. **No separate "energy" raster** — that step has
-  been merged into the routing.
-- [ ] Trigger-point clustering on the trigger-potential raster.
-  Connected components (`scipy.ndimage.label`) on a high-percentile
-  mask, ranked by mean strength, with a min-cluster-cells filter.
-  (`scikit-learn` DBSCAN is *not* added — connected components is
-  the equivalent operation on a regular raster and avoids the dep
-  per `CLAUDE.md` §4.)
-- [ ] GeoTIFF + KMZ export of trigger points (`simplekml`,
-  reprojection to WGS84 from the DEM CRS).
+  field from raw DEM → invert + pit-fill (`epsilon=1e-3`) →
+  Garbrecht-Martz flat resolution (`resolve_flats=True` by default,
+  toggleable via `--no-resolve-flats`) → D∞ accumulation **weighted
+  by heating** → rank-normalise convergence and positive curvature
+  → multiply by min-slope mask (~2.5°). Returns a frozen
+  `RunResult` carrying the trigger-potential raster plus all
+  intermediates (smoothed DEM, tilted DEM, heating, weighted
+  convergence, profile curvature, slope, slope mask). No separate
+  "energy" raster — heating enters as the per-cell weight on the
+  flow accumulation, so the integration is intrinsic. Edge cells
+  where the 3×3 stencil cannot resolve heating are substituted
+  with `0.0` weight (a finite-DEM cell with no informed estimate
+  contributes nothing to the routing) so the `flow_accumulation`
+  weights contract is satisfied. **Normalisation note**: an early
+  draft used q99 clipping for both factors, but on the Mallerstang
+  mosaic that collapsed the trigger raster to near-zero everywhere
+  (each factor reaches 1 only on its top 1 %, and the product
+  vanishes off that intersection). Rank normalisation
+  (`scipy.stats.rankdata / N`) replaces it: each factor spreads
+  uniformly over `[0, 1]`, the product spans the unit interval,
+  and the result is robust to LIDAR-speckle outliers in curvature.
+  **Streak-artefact note**: pit-fill on the inverted, tilted DEM
+  leaves formerly-flat regions (raised plateaus / summit tops)
+  with a BFS chamfer-distance gradient that D∞ rasters into
+  parallel streaks; `resolve_flats` between fill and accumulate
+  replaces that with a Garbrecht-Martz two-component gradient and
+  is on by default.
+- [x] Trigger-point clustering on the trigger-potential raster.
+  `thermal_model.triggers.cluster_triggers` runs `scipy.ndimage.label`
+  (8-connectivity by default) on a high-percentile mask of the
+  strictly-positive trigger field, drops components below
+  `min_cluster_cells` (default 3), and returns a list of
+  `TriggerPoint(row, col, mean_strength, n_cells)` ranked by mean
+  strength. (`scikit-learn` DBSCAN is *not* added — connected
+  components is the equivalent operation on a regular raster and
+  avoids the dep per `CLAUDE.md` §4.)
+- [x] GeoTIFF + KMZ export of trigger points. GeoTIFF reuses
+  `io.write_raster_like`. KMZ via `thermal_model.triggers.write_kmz`:
+  raster centroid → projected (x, y) via the DEM's affine transform
+  → WGS84 (lon, lat) via `pyproj.Transformer` → `simplekml`. Each
+  cluster is a placemark named by its rank with the mean strength
+  and cell count in the description.
 - [x] CLI subcommand: `preview` (pulled forward to Phase 1 alongside
   the diagnostic plots).
-- [ ] CLI subcommand: `run` — wires the full pipeline. Args:
+- [x] CLI subcommand: `run` — wires the full pipeline. Args:
   `--dem`, `--datetime`, `--wind-from`, `--wind-speed`,
   `--wind-tilt-k` (default 0.03), `--out` (trigger GeoTIFF),
-  `--kmz` (trigger points). The deprecated `--release-height` and
-  `--climb-rate` are *not* added.
-- [ ] Diagnostic plotter `viz.plot_trigger_potential` and a
-  `preview --what trigger` CLI hook. The diagnostic should also
-  expose `--what weighted-convergence` so the heating-weighted
-  flow accumulation can be inspected on its own.
+  `--kmz` (optional trigger-point KMZ), plus
+  `--smoothing-sigma`, `--min-slope`, `--absorptivity`,
+  `--linke-turbidity`, `--lat`, `--lon`, `--elevation`,
+  `--cluster-quantile`, `--min-cluster-cells`. The deprecated
+  `--release-height` and `--climb-rate` are *not* added.
+- [x] Diagnostic plotters `viz.plot_trigger_potential` and
+  `viz.plot_weighted_convergence`, plus `preview --what trigger`
+  / `--what weighted-convergence` CLI hooks. The wind-requiring
+  previews share the lat/lon/elevation/datetime resolution helper
+  with the heating preview and add `--wind-from`, `--wind-speed`,
+  `--wind-tilt-k`, `--smoothing-sigma`, `--min-slope` flags.
 
 ### Quarantined / removed
 
@@ -274,6 +309,35 @@ Mallerstang mosaic for a typical SW summer afternoon (5–8 m/s from
 If the NE side of Wild Boar Fell does not enhance under SW wind
 relative to the zero-wind baseline, the tilt has the wrong sign;
 re-check the ramp formula (`docs/model_correction.md` §4).
+
+### Validation log
+
+#### 2026-05-08 — Phase 3 informal gate clearance
+
+* **Mirror-spur pytest gate cleared.** Two synthetic spurs (S- and
+  N-facing, geometrically identical) at noon midsummer: S-facing
+  trigger > N-facing, and removing the cast shadow lifts the
+  N-facing toward the S-facing — confirming the routing transports
+  upstream warmth (`tests/test_physics_pipeline.py`,
+  `test_mirror_spur_south_outscores_north_at_noon_midsummer` and
+  `test_mirror_spur_relit_north_rises_toward_south`).
+* **Visual gate (Wild Boar Fell + Mallerstang) cleared informally.**
+  Trigger preview at 5 m on the 15 km × 20 km mosaic for a typical
+  SW summer afternoon (225° @ 6 m/s, 13:00 BST mid-July) shows
+  ridges, scarps, and spur shoulders lit coherently across the
+  tile, with Mallerstang Edge picked out by curvature, the bowl SW
+  of Wild Boar Fell summit highlighted, and a visible NE-ward
+  shift relative to the zero-wind baseline (the lee-side bias).
+  Hash artefacts visible in the first cut (q99×q99 normalisation
+  with no flat resolution) were resolved by switching to rank
+  normalisation and adding `physics.resolve_flats` between
+  `fill_pits` and `flow_accumulation` in `run_model`. Outputs
+  archived under `outputs/mallerstang_trigger_5m_v2.png` and
+  `outputs/mallerstang_model_surface_5m.png`.
+
+This is a single-area qualitative pass, not a multi-tile formal
+gate; revisit if Phase 4 results suggest the trigger raster is
+mismodelled.
 
 ## Phase 4 — Land cover + time-of-day
 
