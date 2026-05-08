@@ -44,7 +44,8 @@ real terrain.
 # Open a window with the convergence overlay (the headline diagnostic)
 python -m thermal_model preview --dem data/fixtures/wild_boar_fell_east_256_1m.tif
 
-# Pick a single view: convergence | slope | aspect | curvature | heating | all
+# Pick a view: convergence | slope | aspect | curvature | heating |
+#              weighted-convergence | trigger | all
 python -m thermal_model preview --dem <path> --what slope
 
 # Save a 2×2 panel to a PNG instead of opening a window
@@ -86,6 +87,84 @@ python -m thermal_model preview --dem <path> --what heating \
 hazy). `--absorptivity` is the surface absorptivity α = 1 − albedo
 (default 0.80, dry grass / heather; bog is ~0.4 — see `docs/DATA.md`).
 
+### Trigger and weighted-convergence previews (Phase 3)
+
+`--what weighted-convergence` runs the heating-weighted D∞ flow
+accumulation on the inverted, wind-tilted DEM (the routing surface
+for the Phase 3 pipeline). `--what trigger` then multiplies the
+rank-normalised convergence by the rank-normalised positive profile
+curvature and a minimum-slope mask to give the trigger-potential
+raster on `[0, 1]`. Both require `--wind-from` (degrees, met
+convention) and `--wind-speed` (m/s); `--datetime` is mandatory for
+the heating component.
+
+```bash
+# Headline trigger overlay for a SW summer afternoon.
+python -m thermal_model preview \
+  --dem data/processed/mallerstang_wildboar_1m.tif \
+  --what trigger \
+  --datetime "2026-07-15T13:00:00+01:00" \
+  --wind-from 225 --wind-speed 6 \
+  --resolution 5.0 \
+  --save outputs/mallerstang_trigger.png
+
+# The intermediate that the trigger raster is built from.
+python -m thermal_model preview \
+  --dem data/processed/mallerstang_wildboar_1m.tif \
+  --what weighted-convergence \
+  --datetime "2026-07-15T13:00:00+01:00" \
+  --wind-from 225 --wind-speed 6 \
+  --resolution 5.0 \
+  --save outputs/mallerstang_wconv.png
+```
+
+Tunables that affect routing on these previews:
+
+* `--wind-tilt-k` (default 0.03 s/m) — tilt coefficient. `k × |u|` is
+  the dimensionless fractional slope added to the smoothed DEM
+  before inversion. See `docs/MODEL.md` §3 for the 0.01 (light) /
+  0.03 (moderate) / 0.05 (strong) envelope.
+* `--smoothing-sigma` (default 10 m) — Gaussian sigma applied to the
+  DEM before wind tilt and flow routing.
+* `--min-slope` (default 2.5°) — kills flat-summit and valley-floor
+  artefacts.
+* `--no-resolve-flats` — skips Garbrecht-Martz flat resolution
+  between pit-fill and flow accumulation. Default is to *enable* it
+  (recommended); turn off only for fast iteration on large mosaics
+  where the streak artefact is acceptable.
+
+The same lat/lon/elevation/turbidity/absorptivity flags as the
+heating preview are accepted.
+
+## Run the full pipeline
+
+For the headline deliverables — a trigger-potential GeoTIFF plus
+optionally a KMZ of clustered trigger points for XCTrack / SeeYou /
+Google Earth — use the `run` subcommand:
+
+```bash
+python -m thermal_model run \
+  --dem data/processed/mallerstang_wildboar_1m.tif \
+  --resolution 5.0 \
+  --datetime "2026-07-15T13:00:00+01:00" \
+  --wind-from 225 --wind-speed 6 \
+  --wind-tilt-k 0.03 \
+  --out outputs/mallerstang_trigger_2026-07-15_1300.tif \
+  --kmz outputs/mallerstang_trigger_2026-07-15_1300.kmz
+```
+
+The GeoTIFF carries the float32 trigger-potential raster on `[0, 1]`
+in the source CRS (typically EPSG:27700 for EA LIDAR), with NaN
+written as `-9999`. The KMZ contains one placemark per cluster,
+named by rank (1 = brightest), with mean strength and cell count in
+the description. Clustering uses 8-connected components on cells
+where `T > q95` of strictly-positive `T`, dropping clusters smaller
+than `--min-cluster-cells` (default 3); tune via
+`--cluster-quantile` and `--min-cluster-cells`. Skip `--kmz` to get
+the GeoTIFF only.
+
+`python -m thermal_model run --help` lists all options.
+
 ### `--resolution` for big mosaics
 
 The cast-shadow horizon scan dominates pipeline cost (>95%) and
@@ -114,5 +193,5 @@ edges from polluting averages.
 
 ## Status
 
-Phase 2 (solar + heating) feature-complete. See `docs/ROADMAP.md` for
-the phased plan.
+Phase 3 (wind tilt + ground-level triggers) feature-complete. See
+`docs/ROADMAP.md` for the phased plan.

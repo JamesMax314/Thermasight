@@ -17,6 +17,8 @@ from thermal_model.viz.diagnostics import (
     plot_overlay,
     plot_profile_curvature,
     plot_slope,
+    plot_trigger_potential,
+    plot_weighted_convergence,
 )
 from thermal_model.viz.hillshade import hillshade
 
@@ -28,4 +30,6 @@ __all__ = [
     "plot_overlay",
     "plot_profile_curvature",
     "plot_slope",
+    "plot_trigger_potential",
+    "plot_weighted_convergence",
 ]
