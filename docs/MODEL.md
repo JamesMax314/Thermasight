@@ -16,6 +16,18 @@ This document is the technical companion to the conceptual sketch in
 > rationale for both reformulations lives in
 > `docs/model_correction.md`.
 
+> **Phase 3.1 reformulation in flight (opened 2026-05-09).** The
+> §5–§7 production model double-counts energy along the flow path
+> (every cell on a path inherits its full upstream catchment) and
+> has no notion of cycle time on gentle terrain (where the boundary
+> layer fills then dumps in one release rather than steady
+> triggering). The replacement is a *leaky-bucket weighted
+> accumulation* — see §11 below. **Stage 1** of 3.1 — the kernel
+> as a standalone module — has landed (commit `a8ad771`); production
+> `run_model` is unchanged in the meantime. **Stage 2** (the
+> production fold-in) is gated on Mallerstang validation; see
+> `docs/ROADMAP.md` § Phase 3.1.
+
 ---
 
 ## 1. What the model predicts
@@ -430,3 +442,220 @@ purpose (e.g. XC track correlation), it must live in a separately-
 named utility module under `thermal_model/utils/`, with a docstring
 stating it is *not* part of the trigger-prediction pipeline. See
 `docs/ROADMAP.md` Phase 3 quarantine note.
+
+---
+
+## 11. Leaky-bucket reformulation (Phase 3.1, in flight)
+
+**Stage 1 of Phase 3.1 has landed in `thermal_model/physics/leaky_accum.py`
+as a standalone kernel. Stage 2 (production fold-in) is pending —
+see `docs/ROADMAP.md` § Phase 3.1.** Until Stage 2 closes, the
+production pipeline still uses the §5–§7 formulation; this section
+documents the replacement.
+
+### 11.1 Why §5–§7 needs replacing
+
+Two physical defects.
+
+**Energy double-counting along the flow path.** Weighted D∞
+accumulation is monotonic toward the global sink on the inverted DEM
+(the real-terrain summit). At every cell on a flow path, the
+accumulated value $C_w$ contains the full upstream catchment of
+that cell — including all the convex breaks below it. So a convex
+break midway up a hill registers high $C_w$, **and** every cell
+upstream of it sees the same energy in its own $C_w$, **and** the
+summit ultimately receives the catchment total. The post-hoc
+$\hat\kappa^+ \cdot \mathbb{1}[\mathrm{slope} > \theta_{\min}]$
+multiply suppresses the *display* of the summit but does nothing
+about the inflated convergence values at intermediate breaks; the
+same parcel of energy is counted at every cell along its path.
+
+**No mechanism for cyclic mass release on gentle terrain.** Pilots
+observe that gentle slopes "fill up then dump" — the boundary layer
+accumulates buoyancy past a capacity threshold and releases as one
+large thermal, then quiet. The §5–§7 model has no notion of
+capacity or cycle time; gentle-terrain triggers are entirely
+suppressed by the slope mask rather than being modelled as
+long-period dumps. A hill that cycles every 30 minutes with big
+releases is a real but different kind of thermal source from a
+scarp that cycles every minute with small consistent ones, and the
+production model collapses both.
+
+### 11.2 The leaky-bucket kernel
+
+Each cell $c$ has a steady-state through-flow rate $r(c)$ in W
+(or W/m² × cell-area, in the production interpretation): the sum of
+its self-injection $H(c)$ and all upstream contributions delivered
+along the inverted-and-tilted gradient. The kernel routes $r(c)$
+the same way as §5 — D∞, eight-facet, descending-elevation
+topological pass — but at every cell it splits the through-flow
+into a leak-out and a forward-on:
+
+$$
+\begin{aligned}
+\mathrm{leak}(c) &= \bigl(1 - f_{\text{drain}}(c)\bigr) \, r(c) \\
+\mathrm{forward}(c) &= f_{\text{drain}}(c) \, r(c)
+\end{aligned}
+$$
+
+Only $\mathrm{forward}(c)$ is dispatched to the two D∞ receivers;
+$\mathrm{leak}(c)$ is consumed locally as trigger output. At a
+true sink (no positive downhill direction on the inverted DEM —
+real-terrain summit or domain-boundary outlet) the
+$\mathrm{forward}(c)$ is added to a scalar
+$\mathrm{residual\_at\_sinks}$ instead of routed.
+
+The drain fraction is geometry-dependent:
+
+$$
+f_{\text{drain}}(\kappa^+, \mathrm{slope}) = f_{\max}
+  - (f_{\max} - f_{\min}) \, \mathrm{sat}\!\left(\frac{\kappa^+}{\kappa_{\text{ref}}}\right)
+                            \cdot \mathrm{sat}\!\left(\frac{\mathrm{slope} - \theta_{\min}}{\theta_{\text{scale}}}\right)
+$$
+
+where $\mathrm{sat}(x) = 1 - e^{-\max(x, 0)}$ is a smooth
+non-negative saturation, exactly zero for non-positive arguments
+(so flats with $\kappa^+ \le 0$ or $\mathrm{slope} \le \theta_{\min}$
+contribute zero to "sharpness" and the cell forwards everything).
+$\kappa^+$ and $\mathrm{slope}$ are computed from the **raw** DEM,
+not the smoothed or wind-tilted one, matching the §6 convention.
+
+The defaults are $f_{\min} = 0.15$ (skimming floor — even at the
+sharpest break, ~15% of warm air slips past the trigger as
+boundary-layer skim), $f_{\max} = 1.0$ (flats forward everything),
+$\kappa_{\text{ref}} \approx 0.005\ \mathrm{m}^{-1}$,
+$\theta_{\min} \approx 2.5°$ (reused from §7),
+$\theta_{\text{scale}} \approx 15°$.
+
+### 11.3 Cycle period
+
+A second per-cell field gives buoyancy-storage capacity in J/m²
+(when weights are W/m²):
+
+$$
+Q(\kappa^+, \mathrm{slope}) = Q_{\text{ref}} \,
+  \exp\!\left(-\frac{\max(\kappa^+, 0)}{\kappa_{\text{ref}}}\right) \,
+  \exp\!\left(-\frac{\max(\mathrm{slope} - \theta_{\min}, 0)}{\theta_{\text{scale}}}\right).
+$$
+
+Storage is large on gentle / flat terrain (the boundary layer can
+grow tall before the buoyancy cap is overcome) and small on
+sharp / steep terrain (the geometry forces release at low buildup).
+The cycle period at each cell is
+
+$$
+\tau(c) = \frac{Q(c)}{\mathrm{leak}(c)}, \qquad
++\infty \ \text{where}\ \mathrm{leak}(c) = 0.
+$$
+
+In the steady-state interpretation: $r(c)$ is the time-averaged
+rate at which warm air arrives at $c$, $\mathrm{leak}(c)$ is the
+time-averaged rate at which the trigger releases energy, and
+$\tau(c)$ is the period between successive release events. A scarp
+lip with sharp $\kappa^+$ has small $Q$ and large $\mathrm{leak}$,
+giving short $\tau$ — the consistent-trigger regime. A gentle
+ridge has large $Q$ and small $\mathrm{leak}$, giving long $\tau$
+— the cyclic-dump regime. Both produce thermals, but the cycle
+period distinguishes "reliable, frequent, small parcels" from
+"sporadic, big dumps", which is pilot-actionable information.
+
+### 11.4 Energy conservation
+
+The kernel preserves total injected energy exactly along the path.
+Across the finite domain:
+
+$$
+\sum_c \mathrm{leak}(c) \;+\; \mathrm{residual\_at\_sinks}
+  \;=\; \sum_c H(c)
+$$
+
+within float-precision rounding. The §5–§7 pipeline has no such
+invariant — the post-hoc $\hat\kappa^+$ multiply throws energy
+away arbitrarily. Conservation is pinned as a property test
+(`tests/test_physics_leaky_accum.py::test_leaky_accum_energy_conservation_*`)
+and acts as the single tightest correctness check on the
+topological pass.
+
+The trade-off vs §5–§7 is that "rank-normalised display" is
+no longer the natural interpretation of the trigger raster. The
+leak field has physical meaning in absolute units (W/m² of
+time-averaged release rate), useful for cross-tile comparison.
+Rank-normalisation can still be applied at the visualisation
+layer but the underlying field carries information that
+rank-normalising would discard.
+
+### 11.5 The corrected pipeline (Stage 2 will land)
+
+```
+Inputs                                       (unchanged)
+Pipeline
+  1. smooth_dem    = gaussian_smooth(dem, sigma_cells=...)
+  2. tilted_dem    = wind_tilt_ramp(smooth_dem, ...)
+  3. slope, kprof  = slope_aspect/profile_curvature(dem)         # raw
+  4. heating       = solar_irradiance(...) * absorption(...)     # W/m²
+  5. f_drain       = f_drain_field(kprof, slope, ...)            # in [f_min, f_max]
+  6. q_storage     = q_storage_field(kprof, slope, ...)          # J/m²
+  7. inverted      = invert(tilted_dem); fill_pits; resolve_flats
+  8. leak,
+     forward,
+     cycle_period,
+     residual      = leaky_weighted_accumulation(
+                       inverted, cell_size,
+                       weights=heating,
+                       f_drain=f_drain,
+                       q_storage=q_storage,
+                     )
+
+Outputs
+  leak              : float64, W/m², primary trigger output
+  cycle_period_s    : float64, s, secondary pilot-facing output
+  forward           : float64, W/m², diagnostic
+  residual_at_sinks : scalar, W/m², parameter-tuning diagnostic
+```
+
+There is **no separate `weighted_convergence` step and no
+post-hoc `κ̂⁺ × slope_mask` multiply.** Curvature and slope feed
+into the per-cell consumption mechanism via $f_{\text{drain}}$
+and $Q$; the integration is intrinsic to the routing.
+
+### 11.6 What it does *not* change
+
+* The §2 hydrological analogy is unchanged: rising air on real
+  terrain ≡ falling water on inverted terrain. The leaky kernel is
+  a refinement of the *bookkeeping along the flow path*, not the
+  routing itself.
+* The §3 wind-tilt mechanism is unchanged. Tilt is still applied
+  to the smoothed DEM before inversion.
+* The §4 heating field is unchanged. $H$ still enters as the
+  per-cell weight on the routing.
+* The §6 profile-curvature definition is unchanged. $\kappa^+$ now
+  feeds $f_{\text{drain}}$ and $Q$ instead of multiplying the
+  output, but it is computed from the raw DEM in the same way.
+* The §8 trigger clustering and KMZ export are unchanged in
+  principle, just operating on `leak` instead of
+  `trigger_potential`.
+
+### 11.7 Validation regime
+
+Stage 1 (the spike) was gated on synthetic-fixture tests:
+
+* Energy conservation under uniform and random weights.
+* Two limit cases that bridge the kernel to `flow_accumulation`
+  ($f_{\text{drain}} \equiv 1$ and $f_{\text{drain}} \equiv 0$).
+* Cycle-period dimensional check.
+* Mirror-spur Phase 3 gate ported to the leaky kernel.
+* Synthetic gentle-ridge cyclic-dump and sharp-break short-cycle
+  behaviours.
+
+Visual sanity check on the Wild Boar Fell east 256 × 256 fixture
+shows the leak field tracks the same major scarp / ridge features
+as the current trigger raster, with cycle-period contrast on sharp
+features. Conservation closure error to machine precision.
+
+Stage 2 is gated on a Mallerstang re-render at typical SW summer
+afternoon conditions reproducing the Phase 3 visual gate (SW flanks
+bright, Mallerstang Edge cliff line lit, NE lee-side enhancement
+relative to zero-wind baseline) **plus** dimming of the
+summit-plateau artefacts that motivated the reformulation, with
+plausible cycle-period contrast between the cliff lines (short)
+and the rounded ridges (long).

@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current phase: Phase 4 — land cover + time-of-day.**
+**Current phase: Phase 3.1 — leaky-bucket reformulation (Stage 1 spike landed 2026-05-09; Stage 2 fold-in pending).**
 
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
@@ -8,8 +8,20 @@ by the ground-level trigger-prediction model in
 `docs/model_correction.md` — and closed 2026-05-08 with the
 mirror-spur pytest gate plus operator visual confirmation on the
 Wild Boar Fell + Mallerstang mosaic (see Phase 3 § Validation log).
-Update this header when a phase completes. Do not skip phases. Do
-not start the next phase until its predecessor's gate passes.
+
+Phase 3.1 opened 2026-05-09 to address two physical defects of the
+Phase 3 pipeline (energy double-counting along the flow path; no
+mechanism for the cyclic-dump regime on gentle terrain). Stage 1 of
+3.1 — a standalone leaky-bucket weighted accumulation kernel +
+synthetic-fixture tests — has landed; Stage 2 (production
+integration) is gated on visual validation against Mallerstang. The
+production `run_model` is unchanged in the meantime; the new kernel
+is in the codebase as `physics.leaky_weighted_accumulation` but is
+not wired to the pipeline.
+
+Update this header when a phase or stage completes. Do not skip
+phases. Do not start the next phase until its predecessor's gate
+passes.
 
 ---
 
@@ -338,6 +350,178 @@ re-check the ramp formula (`docs/model_correction.md` §4).
 This is a single-area qualitative pass, not a multi-tile formal
 gate; revisit if Phase 4 results suggest the trigger raster is
 mismodelled.
+
+## Phase 3.1 — Leaky-bucket reformulation
+
+**Opened 2026-05-09.** The Phase 3 pipeline routes heating as a
+weight on D∞ flow accumulation, then multiplies the result by
+positive curvature and a slope mask. Two physical defects motivate
+this reformulation:
+
+1. **Energy double-counting along the flow path.** Weighted D∞
+   accumulation is monotonic toward the global sink (real-terrain
+   summit on the inverted DEM). A convex break midway up the hill
+   registers high trigger potential, *and* every cell upstream of
+   it sees the same energy in its weighted-convergence value, *and*
+   the summit ultimately receives the catchment total. The post-hoc
+   `κ̂⁺ × slope_mask` multiply suppresses the *display* of the
+   summit but does nothing about the inflated convergence values at
+   intermediate breaks; the same parcel of energy is counted at
+   every cell along its path.
+
+2. **No mechanism for cyclic mass release on gentle terrain.**
+   Pilots observe that gentle slopes "fill up then dump" — the
+   boundary layer accumulates buoyancy past a capacity threshold
+   and releases as one large thermal, then quiet. The Phase 3
+   model has no notion of capacity or cycle time; gentle-terrain
+   triggers are entirely suppressed by the slope mask rather than
+   being modelled as long-period dumps. This loses pilot-relevant
+   information: a hill that cycles every 30 minutes with big
+   releases is a real but different kind of thermal source from a
+   scarp that cycles every minute with small consistent ones.
+
+The reformulation replaces the post-hoc multiply with a
+**leaky-bucket weighted accumulation**. Each cell consumes a
+curvature/slope-dependent fraction `(1 − f_drain)` of its
+through-flow as trigger output and forwards only `f_drain` onward;
+a per-cell storage capacity `Q` produces a cycle period
+`τ = Q / leak`. Energy is conserved along the path (no
+double-counting). The full physics derivation lives in
+`docs/MODEL.md` §11; the design conversation is preserved in
+`~/.claude/plans/please-read-docs-for-whimsical-scone.md`.
+
+The work is **staged**:
+
+* **Stage 1 (this section)** — standalone kernel + synthetic-fixture
+  validation, no production-pipeline changes. Lets the algorithm be
+  tested end-to-end before any Phase 3 code is touched.
+* **Stage 2 (gated on Stage 1 + Mallerstang visual review)** —
+  fold the kernel into `run_model`, restructure `RunResult`, add
+  `cycle_period` as a first-class output, JIT the topological pass
+  with `numba`, update CLI / viz / `docs/MODEL.md` § 5–§ 7 / docs/
+  `model_correction.md`. After Stage 2, `Phase 3` is closed and
+  Phase 4 (land cover + time-of-day) opens.
+
+### Stage 1 — spike (closed 2026-05-09)
+
+- [x] `physics/leaky_accum.py` — the kernel `leaky_weighted_accumulation`
+  plus `f_drain_field` and `q_storage_field` shape helpers and the
+  `LeakyResult` frozen dataclass. Pure numpy, mirrors
+  `physics.flow._flow_accumulation_numpy`'s topological
+  descending-elevation pass; reuses `_FACETS`, `_facet_slopes`,
+  `_validate_dem`, `_validate_weights` from `flow.py` so the
+  unit-`f_drain` limit reduces exactly to `flow_accumulation`. The
+  saturating shape function uses `1 − exp(−x)` so the leak
+  asymptotes near `f_min` for realistic Dales-scale curvature
+  values, not only at impossible extremes.
+- [x] `tests/test_physics_leaky_accum.py` — 21 tests covering:
+  * **Energy conservation** under uniform and random weights:
+    `nansum(leak) + residual ≡ nansum(weights)` to machine precision.
+    The strongest invariant; catches almost any wiring error in the
+    topological pass.
+  * **Two limit cases** that bridge the new kernel to the existing
+    `flow_accumulation`: `f_drain ≡ 1` ⇒ `forward` matches
+    `flow_accumulation` cell-for-cell; `f_drain ≡ 0` ⇒ `leak`
+    equals the input weights with nothing forwarded.
+  * **Cycle-period dimensionality**: `τ = Q / leak` exactly where
+    `leak > 0`, `+inf` where `leak == 0`.
+  * **Mirror-spur Phase 3 gate ported**: S-spur outscores N-spur
+    on `leak` at noon midsummer; relighting the cast shadow
+    narrows the gap, confirming the leaky kernel transports
+    upstream warmth via the routing rather than just multiplying
+    locally.
+  * **Synthetic gentle-ridge** ⇒ leak peaks in the transition band
+    where the ramp meets the flat top, with a long cycle period
+    (~10⁴ s) — the cyclic-dump regime.
+  * **Synthetic sharp-break** ⇒ leak peaks at the cliff lip with
+    a short cycle period (~10² s) — the consistent-trigger regime.
+  * **Weights / `f_drain` / `q_storage` contracts** mirroring the
+    `flow_accumulation` shape and finiteness checks.
+  * **NaN propagation** through the output rasters with a finite
+    `residual_at_sinks_total` scalar.
+- [x] `physics/__init__.py` — re-exports `leaky_weighted_accumulation`,
+  `LeakyResult`, `f_drain_field`, `q_storage_field`,
+  `F_MIN_DEFAULT`, `F_MAX_DEFAULT`. The kernel is **not** imported
+  by `pipeline.run_model`; production behaviour is unchanged.
+- [x] `environment.yml` — adds `numba` for the Stage 2 JIT pass.
+  The Stage 1 kernel is pure numpy; numba is a pre-emptive
+  dependency so the Stage 2 fold-in does not also need to update
+  the conda env.
+- [x] **Visual sanity check** on the Wild Boar Fell east 256×256
+  fixture: rendered as four panels (current trigger; leaky leak
+  rank-normalised; log-cycle-period clipped to [60 s, 1 hr]; diff)
+  in `outputs/leaky_spike_compare.png`. Closure error
+  `nansum(leak) + residual − nansum(weights) = 0` to float
+  precision. Leak field tracks the same major scarp / ridge
+  features as the current trigger raster; cycle-period raster
+  shows short cycles concentrated on sharp features (the
+  pilot-relevant signature).
+- [x] **Synthetic-fixture visualisations** in
+  `outputs/leaky_spike_{mirror_spur,gentle_ridge,sharp_break}.png`
+  illustrating the three test fixtures. The contrast between the
+  gentle ridge (4 % heating consumed as triggers, ~10⁴ s cycle —
+  rare big dump) and the sharp break (48 % heating consumed,
+  ~10² s cycle — reliable consistent thermals) reproduces the
+  bimodal physics that motivated the reformulation.
+
+**Stage 1 gate**: 21 new tests pass; `ruff check`, `ruff format
+--check`, `mypy thermal_model`, `pytest` all green; visual sanity
+check matches expectations; production code untouched.
+**Cleared 2026-05-09** (commit `a8ad771` on
+`feat/leaky-accum-spike`).
+
+### Stage 2 — production fold-in (pending)
+
+Branch: `feat/phase3.1-leaky-pipeline-fold-in` (not yet created).
+Stage 2 is gated on Stage 1's visual gate (above) and an
+operator-confirmed Mallerstang re-render against the existing
+Phase 3 baseline.
+
+- [ ] `physics/pipeline.py:run_model` — replace the
+  `flow_accumulation(weights=heating)` + post-hoc `rank_norm(wc) ×
+  rank_norm(κ⁺) × slope_mask` step with
+  `leaky_weighted_accumulation(...)`. Curvature and slope feed
+  `f_drain_field` and `q_storage_field`; production trigger raster
+  becomes `leak` (rank-normalised for backward-compatible display).
+- [ ] `physics/pipeline.py:RunResult` — gain `leak` (W or
+  rank-normalised), `forward` (W, diagnostic), `cycle_period_s`
+  (s), `residual_at_sinks_total` (scalar). Drop `slope_mask` as a
+  public field (still computed internally for `f_drain`).
+  `weighted_convergence` becomes the sum `forward + leak` for
+  backward continuity.
+- [ ] `physics/leaky_accum.py` — companion `_leaky_pass_numba`
+  JIT-compiled topological sweep, auto-selected when `numba` is
+  importable. Pure-numpy reference path stays as the test oracle,
+  mirroring the richdem-vs-numpy backend pattern in `flow.py`.
+- [ ] `cli.py` — `run` subcommand gains `--f-min`, `--kappa-ref`,
+  `--q-ref`, `--slope-scale`. New `--cycle-period-out` (optional
+  GeoTIFF). `preview --what` gains `cycle-period` and `leak`.
+- [ ] `viz/` — new `plot_cycle_period` (log-scale plasma_r,
+  no-trigger cells masked light grey) and `plot_leak` plotters.
+- [ ] `triggers/cluster.py` — clustering runs on `leak` rather
+  than `trigger_potential`. `TriggerPoint` gains
+  `mean_cycle_period_s`. KMZ description includes cycle period.
+- [ ] `docs/MODEL.md` — promote §11 (currently the future-pointer
+  section) to mainline §5–§7. Demote the current §5–§7 to §10.x
+  as "Variant C (superseded)".
+- [ ] `docs/model_correction.md` §3 + §6 + §8 — note the
+  leaky-bucket evolution; the integration-by-routing principle
+  carries over but the per-cell consumption mechanism changes.
+- [ ] `tests/test_physics_pipeline.py` — mirror-spur tests assert
+  against `RunResult.leak`; new `test_run_model_energy_conservation`
+  invariant; new `test_run_model_cycle_period_finite_at_triggers`.
+- [ ] **Mallerstang re-render** with parameter sweep
+  (`f_min`, `kappa_ref`, `q_ref`, `slope_scale`) documented in
+  `docs/VALIDATION.md` § Validation log under a new dated entry.
+
+**Stage 2 gate**: full test suite green; `run_model` outputs the
+new fields; Mallerstang trigger raster on a typical SW summer
+afternoon (225° @ 6 m/s, 13:00 BST mid-July) reproduces the Phase 3
+visual gate (SW flanks bright, Mallerstang Edge cliff line lit, NE
+lee-side enhancement vs zero-wind baseline) **plus** dimming of
+the summit-plateau artefacts that motivated the reformulation, with
+plausible cycle-period contrast between the cliff lines (short)
+and the rounded ridges (long).
 
 ## Phase 4 — Land cover + time-of-day
 
