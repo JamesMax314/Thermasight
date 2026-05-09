@@ -73,6 +73,36 @@ def test_cluster_triggers_validates_inputs() -> None:
         cluster_triggers(arr, min_cluster_cells=0)
     with pytest.raises(ValueError):
         cluster_triggers(arr, connectivity=5)
+    with pytest.raises(ValueError, match="cycle_period_s shape"):
+        cluster_triggers(arr, cycle_period_s=np.zeros((9, 9)))
+
+
+def test_cluster_triggers_populates_cycle_period_when_supplied() -> None:
+    """When cycle_period_s is supplied, each TriggerPoint gets the
+    mean cycle period over its cluster (excluding +inf cells).
+    """
+    arr = _three_blob_raster()
+    cycle = np.full_like(arr, np.inf)
+    # Bright blob: short cycle (100 s); medium blob: long (3000 s).
+    cycle[15:19, 15:19] = 3000.0
+    cycle[25:29, 25:29] = 100.0
+    points = cluster_triggers(
+        arr,
+        threshold_quantile=0.5,
+        min_cluster_cells=3,
+        cycle_period_s=cycle,
+    )
+    assert len(points) == 2
+    # Brightest first (the 0.95 blob → 100 s cycle).
+    assert points[0].mean_cycle_period_s == pytest.approx(100.0)
+    assert points[1].mean_cycle_period_s == pytest.approx(3000.0)
+
+
+def test_cluster_triggers_cycle_period_optional() -> None:
+    """Without cycle_period_s, mean_cycle_period_s remains None."""
+    arr = _three_blob_raster()
+    points = cluster_triggers(arr, threshold_quantile=0.5, min_cluster_cells=3)
+    assert all(p.mean_cycle_period_s is None for p in points)
 
 
 def test_write_kmz_round_trip(tmp_path: Path) -> None:
@@ -97,6 +127,39 @@ def test_write_kmz_round_trip(tmp_path: Path) -> None:
     # Rank 1 is the brightest.
     assert "<name>1</name>" in text
     assert "<name>2</name>" in text
+    # No cycle-period data was supplied, so the description does not
+    # mention it.
+    assert "Cycle period:" not in text
+
+
+def test_write_kmz_includes_cycle_period_when_present(tmp_path: Path) -> None:
+    points = [
+        TriggerPoint(
+            row=10.5,
+            col=20.5,
+            mean_strength=0.91,
+            n_cells=16,
+            mean_cycle_period_s=180.0,  # 3 min
+        ),
+        TriggerPoint(
+            row=30.0,
+            col=15.0,
+            mean_strength=0.72,
+            n_cells=12,
+            mean_cycle_period_s=4800.0,  # 80 min
+        ),
+    ]
+    transform = from_origin(380000.0, 500000.0, 2.0, 2.0)
+    out = write_kmz(
+        points, tmp_path / "trig.kmz", transform=transform, crs=CRS.from_epsg(27700)
+    )
+    with zipfile.ZipFile(out) as kmz:
+        text = kmz.read("doc.kml").decode("utf-8")
+    # Both placemarks should carry a Cycle period: line, formatted in
+    # the most pilot-readable unit (min for 180–3600 s, hr above).
+    assert text.count("Cycle period:") == 2
+    assert "Cycle period: 3.0 min" in text
+    assert "Cycle period: 1.3 hr" in text
 
 
 def test_write_kmz_requires_crs(tmp_path: Path) -> None:
