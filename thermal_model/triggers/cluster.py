@@ -37,16 +37,26 @@ class TriggerPoint:
         ``(0, 0)`` cell is at ``(row=0, col=0)``). Fractional because
         the centroid is mass-weighted by the cells in the cluster.
     mean_strength : float
-        Mean of the trigger-potential raster over the cluster's cells,
-        on ``[0, 1]``.
+        Mean of the strength raster over the cluster's cells. The
+        unit is whatever the raster passed to :func:`cluster_triggers`
+        carried — ``[0, 1]`` rank-norm for ``trigger_potential``,
+        absolute W/m² for ``leak``.
     n_cells : int
         Number of cells in the cluster.
+    mean_cycle_period_s : float or None
+        Mean buoyancy-cycle period over the cluster's cells, in
+        seconds, when a ``cycle_period_s`` raster is supplied to
+        :func:`cluster_triggers`. ``None`` when not supplied. Cells
+        with infinite cycle period are excluded from the mean (only
+        cells that actually leak contribute), so this value is finite
+        for any cluster that survives the strength threshold.
     """
 
     row: float
     col: float
     mean_strength: float
     n_cells: int
+    mean_cycle_period_s: float | None = None
 
 
 def _eight_connected_structure() -> np.ndarray:
@@ -68,14 +78,20 @@ def cluster_triggers(
     threshold_quantile: float = 0.95,
     min_cluster_cells: int = 3,
     connectivity: int = 8,
+    cycle_period_s: np.ndarray | None = None,
 ) -> list[TriggerPoint]:
-    """Cluster a trigger-potential raster into discrete trigger points.
+    """Cluster a trigger raster into discrete trigger points.
 
     Parameters
     ----------
     trigger_potential : np.ndarray
-        2-D float raster from :func:`thermal_model.physics.run_model`.
-        Values on ``[0, 1]`` with NaN nodata.
+        2-D float raster representing per-cell trigger strength. From
+        :func:`thermal_model.physics.run_model` this is either
+        ``RunResult.trigger_potential`` (rank-normalised, ``[0, 1]``)
+        or ``RunResult.leak`` (absolute W/m²) — both are
+        order-preserving so the same cells survive the percentile
+        threshold either way; only the ``mean_strength`` units differ.
+        NaN nodata.
     threshold_quantile : float, default 0.95
         Percentile of strictly-positive finite cells used as the binary
         threshold. Cells with ``T > threshold`` are candidates. Must be
@@ -88,6 +104,13 @@ def cluster_triggers(
         neighbours only) or ``8`` (rook + bishop). 8 is the default
         for a regular raster — DBSCAN with ``eps = cell_size`` reduces
         to 8-connected components on a regular grid.
+    cycle_period_s : np.ndarray, optional
+        Per-cell buoyancy-cycle period (s) from
+        ``RunResult.cycle_period_s``. When supplied, each
+        :class:`TriggerPoint` carries the mean cycle period over its
+        cluster (excluding cells with infinite period — i.e. only
+        cells that actually leak contribute). When omitted, the
+        ``mean_cycle_period_s`` field is left as ``None``.
 
     Returns
     -------
@@ -99,8 +122,9 @@ def cluster_triggers(
     ------
     ValueError
         If ``trigger_potential`` is not 2-D, the quantile is out of
-        range, ``min_cluster_cells < 1``, or ``connectivity`` is not
-        4 or 8.
+        range, ``min_cluster_cells < 1``, ``connectivity`` is not
+        4 or 8, or ``cycle_period_s`` is given with a mismatched
+        shape.
     """
     if trigger_potential.ndim != 2:
         raise ValueError(
@@ -114,6 +138,11 @@ def cluster_triggers(
         raise ValueError(f"min_cluster_cells must be >= 1, got {min_cluster_cells}")
     if connectivity not in (4, 8):
         raise ValueError(f"connectivity must be 4 or 8, got {connectivity}")
+    if cycle_period_s is not None and cycle_period_s.shape != trigger_potential.shape:
+        raise ValueError(
+            f"cycle_period_s shape {cycle_period_s.shape} != "
+            f"trigger_potential shape {trigger_potential.shape}"
+        )
 
     arr = np.asarray(trigger_potential, dtype=np.float64)
     finite = np.isfinite(arr)
@@ -147,19 +176,50 @@ def cluster_triggers(
     means_arr = np.atleast_1d(np.asarray(means, dtype=np.float64))
     centroids_seq = centroids if isinstance(centroids, list) else [centroids]
 
+    # Optional cycle-period averaging. Only include finite cells
+    # within each labelled cluster; +inf cells (leak == 0) would
+    # contaminate the mean even though they cannot be in the mask
+    # (mask requires arr > threshold > 0, and a cell with leak == 0
+    # also has its trigger raster value at 0). In practice the mask
+    # already excludes those cells; the np.where here is defensive
+    # and handles the case where someone passes in a strength raster
+    # decoupled from cycle_period_s (e.g. a normalised version).
+    cycle_means_arr: np.ndarray | None = None
+    if cycle_period_s is not None:
+        cps = np.asarray(cycle_period_s, dtype=np.float64)
+        finite_cycle = np.isfinite(cps) & (labels_arr > 0)
+        cycle_for_mean = np.where(finite_cycle, cps, 0.0)
+        cycle_count = ndimage.sum(
+            finite_cycle.astype(np.int64), labels_arr, index=component_ids
+        )
+        cycle_sum = ndimage.sum(cycle_for_mean, labels_arr, index=component_ids)
+        cycle_count_arr = np.atleast_1d(np.asarray(cycle_count, dtype=np.int64))
+        cycle_sum_arr = np.atleast_1d(np.asarray(cycle_sum, dtype=np.float64))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cycle_means_arr = np.where(
+                cycle_count_arr > 0,
+                cycle_sum_arr / cycle_count_arr.astype(np.float64),
+                np.nan,
+            )
+
     points: list[TriggerPoint] = []
-    for size, mean_t, centre in zip(
-        sizes_arr.tolist(), means_arr.tolist(), centroids_seq, strict=True
+    for k, (size, mean_t, centre) in enumerate(
+        zip(sizes_arr.tolist(), means_arr.tolist(), centroids_seq, strict=True)
     ):
         if size < min_cluster_cells:
             continue
         row, col = centre
+        mean_cycle: float | None = None
+        if cycle_means_arr is not None:
+            value = float(cycle_means_arr[k])
+            mean_cycle = value if np.isfinite(value) else None
         points.append(
             TriggerPoint(
                 row=float(row),
                 col=float(col),
                 mean_strength=float(mean_t),
                 n_cells=int(size),
+                mean_cycle_period_s=mean_cycle,
             )
         )
 

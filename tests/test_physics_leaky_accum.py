@@ -652,6 +652,52 @@ def test_q_storage_field_flat_returns_q_ref() -> None:
     np.testing.assert_allclose(q, Q_REF)
 
 
+# ---------------------------------------------------------------------------
+# Cross-backend agreement: numba JIT vs numpy reference must match.
+# ---------------------------------------------------------------------------
+
+
+def test_leaky_accum_numba_and_numpy_agree() -> None:
+    """The numba JIT backend must produce bit-identical output to the
+    pure-numpy reference, up to float-summation order. The numpy path
+    is the test oracle; the numba path is the production speed-up.
+    """
+    dem = _tilted_random_dem(seed=42, shape=(48, 48))
+    rng = np.random.default_rng(99)
+    weights = rng.uniform(0.5, 5.0, size=dem.shape)
+    f, q = _f_drain_and_q_for(dem, CELL_SIZE_M)
+
+    numpy_result = leaky_weighted_accumulation(
+        dem,
+        CELL_SIZE_M,
+        f_drain=f,
+        q_storage=q,
+        weights=weights,
+        use_numba=False,
+    )
+    numba_result = leaky_weighted_accumulation(
+        dem,
+        CELL_SIZE_M,
+        f_drain=f,
+        q_storage=q,
+        weights=weights,
+        use_numba=True,
+    )
+
+    np.testing.assert_allclose(numpy_result.leak, numba_result.leak, rtol=1e-12)
+    np.testing.assert_allclose(numpy_result.forward, numba_result.forward, rtol=1e-12)
+    # cycle_period contains +inf; assert_allclose handles that.
+    np.testing.assert_allclose(
+        numpy_result.cycle_period, numba_result.cycle_period, rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        numpy_result.residual_at_sinks_total,
+        numba_result.residual_at_sinks_total,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 def test_q_storage_field_sharp_terrain_below_q_ref() -> None:
     kprof = np.full((5, 5), 0.05)  # > kappa_ref
     slope_rad = np.full((5, 5), np.radians(45.0))

@@ -1,29 +1,44 @@
-"""End-to-end Phase 3 trigger-prediction pipeline.
+"""End-to-end Phase 3.1 trigger-prediction pipeline.
 
-Orchestrates the §6 block of ``docs/model_correction.md``: smooth →
-wind tilt → heating from the *raw* DEM → invert + pit-fill + D∞
-accumulation **weighted by heating** → multiply by normalised
-positive profile curvature → multiply by a minimum-slope mask. The
-output is the trigger-potential raster on ``[0, 1]``.
+Orchestrates the §11 block of ``docs/MODEL.md``: smooth → wind tilt
+→ heating from the *raw* DEM → invert + pit-fill + leaky-bucket
+weighted D∞ accumulation. The primary output is the per-cell ``leak``
+raster (W/m² of time-averaged trigger-release rate); a secondary
+``cycle_period_s`` raster gives the period between successive
+releases at each cell.
 
-There is **no** separate "combine heating and convergence" step.
-Heating enters the routing as the per-cell weight on the D∞ flow
-accumulation, so the integration is intrinsic. See
-``docs/MODEL.md`` §5 and ``docs/model_correction.md`` §3 for the
-justification (a *local* multiplier wrongly zeros shadowed convergent
-points fed by sunny upwind faces; weighted accumulation routes the
-upstream warmth to them and gets the right answer).
+The leaky kernel replaces the Phase 3 post-hoc multiply
+(``rank_norm(weighted_convergence) × rank_norm(κ⁺) × slope_mask``).
+Each cell consumes a curvature/slope-dependent fraction
+``(1 − f_drain)`` of its through-flow as trigger output and forwards
+only ``f_drain`` of it onward. Energy is conserved along the path:
+``Σ leak + residual_at_sinks_total ≡ Σ heating``. There is no
+separate "combine heating and convergence" step — heating enters
+the routing as the per-cell weight, and the integration is intrinsic.
+See ``docs/MODEL.md`` §11 for the derivation.
 
-Which DEM each step uses (matches the table in
-``docs/model_correction.md`` §6):
+Backward-compatible display: ``RunResult.trigger_potential`` is
+``rank_normalise(leak)``, so existing CLI / viz / KMZ consumers
+that expected a ``[0, 1]`` raster keep working.
+
+Which DEM each step uses:
 
 * Gaussian smooth: raw DEM.
 * Wind tilt: smoothed DEM.
-* Slope, aspect, profile curvature, slope mask: raw DEM
-  (real geometry drives shadows, gradients, and detachment).
+* Slope, aspect, profile curvature (for irradiance and the
+  RunResult diagnostics): raw DEM (real geometry drives shadows
+  and the per-cell DNI projection).
+* Slope and profile curvature (for the leaky shape functions
+  ``f_drain`` and ``q_storage``): a separately smoothed copy of
+  the raw DEM with σ = ``curvature_smoothing_sigma_m`` (default
+  10 m). Carries forward the ``MODEL.md`` §6 ¶282–284
+  prescription — single-cell LIDAR κ⁺ outliers would otherwise
+  saturate ``sat(κ⁺/κ_ref)`` and pull ``f_drain`` to its
+  ``f_min`` floor, producing a per-cell speckle on the leak
+  raster.
 * Cast-shadow mask: raw DEM.
-* Inversion + pit-fill + weighted D∞ accumulation: smoothed +
-  tilted DEM, with the heating field as ``weights=``.
+* Inversion + pit-fill + leaky weighted accumulation: smoothed +
+  tilted DEM, with the heating field as the per-cell weight.
 
 This module has no I/O. The CLI ``run`` subcommand is the wrapper
 that reads a DEM and writes GeoTIFF / KMZ outputs.
@@ -38,10 +53,16 @@ from datetime import datetime
 import numpy as np
 from scipy import ndimage, stats
 
-from thermal_model.physics.flow import flow_accumulation
 from thermal_model.physics.heating import DEFAULT_ABSORPTIVITY, heating_field
 from thermal_model.physics.hydrology import fill_pits
 from thermal_model.physics.hydrology import resolve_flats as _resolve_flats_fn
+from thermal_model.physics.leaky_accum import (
+    F_MAX_DEFAULT,
+    F_MIN_DEFAULT,
+    f_drain_field,
+    leaky_weighted_accumulation,
+    q_storage_field,
+)
 from thermal_model.physics.wind_tilt import wind_tilt_ramp
 from thermal_model.solar.irradiance import clear_sky_irradiance, slope_irradiance
 from thermal_model.solar.position import solar_position
@@ -53,49 +74,76 @@ from thermal_model.terrain.morphometry import aspect, profile_curvature, slope
 class RunResult:
     """Output of :func:`run_model`.
 
-    The primary deliverable is :attr:`trigger_potential`. The other
-    fields are diagnostics — exposed so callers can plot, export, or
-    sensitivity-test individual stages without re-running the whole
-    pipeline.
+    The primary deliverable is :attr:`leak` (the absolute trigger
+    output) with :attr:`cycle_period_s` as its pilot-facing companion.
+    :attr:`trigger_potential` is preserved as ``rank_normalise(leak)``
+    so existing CLI / viz / KMZ consumers keep working without a
+    rewrite.
 
     Attributes
     ----------
     trigger_potential : np.ndarray
-        Float64, ``[0, 1]``, NaN-passthrough. The product of normalised
-        weighted-convergence, normalised positive profile curvature,
-        and the minimum-slope gate. The headline raster.
+        Float64, ``[0, 1]``, NaN-passthrough. ``rank_normalise(leak)``.
+        Backward-compatible primary raster. Order-preserving with
+        :attr:`leak` but spread uniformly over the unit interval, so
+        existing thresholding (e.g. clustering at q95) keeps the same
+        meaning.
+    leak : np.ndarray
+        Float64, W/m² (when heating drives the weights). The per-cell
+        time-averaged trigger-release rate from the leaky-bucket
+        accumulation. Absolute units, useful for cross-tile comparison.
+        NaN at NaN-DEM cells.
+    forward : np.ndarray
+        Float64, W/m². The post-leak through-flow that was passed to
+        the D∞ neighbours. ``leak + forward`` is the pre-leak
+        through-flow (analogous to the old ``weighted_convergence``).
+        Diagnostic.
+    cycle_period_s : np.ndarray
+        Float64, seconds. ``q_storage / leak``; ``+inf`` where a cell
+        does not leak. The buoyancy-cycle period at each cell — short
+        on sharp scarps (consistent triggers), long on gentle ridges
+        (cyclic mass-release dumps). NaN at NaN-DEM cells.
+    residual_at_sinks_total : float
+        Total ``forward`` that reached cells with no D∞ outflow (true
+        sinks on the inverted DEM — real-terrain summits and
+        domain-boundary outlets) without being consumed. A diagnostic
+        scalar for parameter tuning: a large fraction of the total
+        injected weight ending up here means ``f_drain`` is too high
+        (or ``q_storage`` too high) and triggers are being
+        under-counted.
     weighted_convergence : np.ndarray
-        Float64, raw upstream W/m² × cell-count from the heating-
-        weighted D∞ flow accumulation. Diagnostic; not normalised.
+        Float64, ``leak + forward``. The pre-leak through-flow at
+        each cell — the heating-weighted D∞ accumulation that the
+        old pipeline reported. Kept as a diagnostic and for backward
+        compatibility with ``viz.plot_weighted_convergence``.
     heating_wm2 : np.ndarray
-        Float64, W/m². The per-cell weight passed to the flow
+        Float64, W/m². The per-cell weight passed to the leaky
         accumulation. NaN at finite-DEM edge cells where the 3×3
         stencil could not resolve slope/aspect; those entries are
-        substituted with ``0.0`` before being passed as ``weights=``
-        (a finite-DEM cell with no informed heating estimate
-        contributes nothing to the routing, which is the conservative
-        choice).
+        substituted with ``0.0`` before being passed as ``weights=``.
     smoothed_dem_m : np.ndarray
         Float64, metres. The Gaussian-smoothed input DEM.
     tilted_dem_m : np.ndarray
         Float64, metres. The smoothed DEM with the wind-tilt ramp
         added (input to the inversion).
     profile_curvature : np.ndarray
-        Float64, 1/m. From the *raw* DEM. Positive = convex.
+        Float64, 1/m. From the *raw* DEM. Positive = convex. Drives
+        ``f_drain`` and ``q_storage`` along with :attr:`slope_rad`.
     slope_rad : np.ndarray
         Float64, radians. From the *raw* DEM.
-    slope_mask : np.ndarray
-        Bool, ``True`` where ``slope_rad > min_slope_rad``.
     """
 
     trigger_potential: np.ndarray
+    leak: np.ndarray
+    forward: np.ndarray
+    cycle_period_s: np.ndarray
+    residual_at_sinks_total: float
     weighted_convergence: np.ndarray
     heating_wm2: np.ndarray
     smoothed_dem_m: np.ndarray
     tilted_dem_m: np.ndarray
     profile_curvature: np.ndarray
     slope_rad: np.ndarray
-    slope_mask: np.ndarray
 
 
 def _gaussian_smooth_nan(dem: np.ndarray, sigma_cells: float) -> np.ndarray:
@@ -170,7 +218,13 @@ def run_model(
     wind_speed_ms: float,
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
+    slope_scale_deg: float = 15.0,
+    kappa_ref: float = 0.005,
+    q_ref: float = 1.0e6,
+    f_min: float = F_MIN_DEFAULT,
+    f_max: float = F_MAX_DEFAULT,
     absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
@@ -209,9 +263,52 @@ def run_model(
         before wind tilt and flow routing. ``CLAUDE.md`` §2 gives the
         10–25 m envelope; 10 m is the lower bound and the project
         default. ``0`` disables smoothing.
+    curvature_smoothing_sigma_m : float, default 10.0
+        Gaussian smoothing scale in metres applied to the raw DEM
+        before slope and profile curvature are derived **for the
+        leaky shape functions** ``f_drain`` and ``q_storage``.
+        Independent of ``smoothing_sigma_m`` (which only affects the
+        routing path) and of the raw slope/aspect/curvature that
+        feed irradiance and the ``RunResult`` diagnostics. Suppresses
+        single-cell LIDAR speckle that would otherwise saturate
+        ``sat(κ⁺/κ_ref)`` on isolated cells and produce a per-cell
+        spray on the leak raster. Carries forward the ``MODEL.md``
+        §6 ¶282–284 prescription. ``0`` disables (raw curvature
+        feeds the shape functions, reproducing pre-2026-05-09
+        behaviour).
     min_slope_deg : float, default 2.5
-        Minimum slope (degrees) for a cell to count as a candidate
-        trigger. Kills flat-summit and valley-floor artefacts.
+        Slope (degrees) below which a cell contributes nothing to
+        ``sharpness`` in the leaky shape function — i.e. ``f_drain``
+        stays at its ``f_max`` floor and the cell forwards everything.
+        Encodes "flat surfaces don't trigger" and replaces the hard
+        post-hoc slope-mask cutoff of the previous pipeline.
+    slope_scale_deg : float, default 15.0
+        Reference slope scale (degrees). At
+        ``slope − min_slope_deg = slope_scale_deg`` the slope
+        contribution to ``sharpness`` is ``1 − exp(−1) ≈ 0.63``;
+        the saturation reaches ``≈ 0.95`` by 3× the scale. Larger
+        values make the slope dependence gentler.
+    kappa_ref : float, default 0.005 (1/m)
+        Reference profile-curvature scale. At
+        ``profile_curv = kappa_ref`` the curvature contribution to
+        ``sharpness`` is ``≈ 0.63``. ``0.005 m⁻¹`` corresponds to a
+        slope changing by roughly 1° over 10 m, which marks the
+        threshold between "rounded ridge" and "convex break" on
+        Dales-scale terrain.
+    q_ref : float, default 1.0e6 (J/m² when heating is W/m²)
+        Reference buoyancy storage capacity. Sets the cycle-period
+        magnitude — at ``leak = 1 W/m²`` and the default ``q_ref``,
+        ``cycle_period`` is ``10⁶ s ≈ 11.6 days``; realistic Dales
+        ``leak`` rates are 10²–10³ W/m² so realistic cycle periods
+        are tens to thousands of seconds.
+    f_min : float, default 0.15
+        Skimming floor on the drain fraction — at the sharpest
+        terrain, this fraction of through-flow always passes by as
+        boundary-layer skim. See
+        :data:`thermal_model.physics.F_MIN_DEFAULT`.
+    f_max : float, default 1.0
+        Maximum drain fraction. On flats and concave terrain
+        ``f_drain = f_max`` (forward everything; no leak).
     absorptivity : float or np.ndarray, default 0.80
         Shortwave absorptivity ``alpha = 1 - albedo``. Phase 2 ships a
         scalar default; Phase 4 will switch in a per-cell array driven
@@ -244,19 +341,19 @@ def run_model(
 
     Notes
     -----
-    The trigger raster is composed by **rank-normalising** the
-    weighted convergence and the strictly-positive profile curvature
-    separately, then multiplying by the slope mask. Rank
-    normalisation spreads each factor uniformly over ``[0, 1]`` so
-    the multiplicative product retains usable dynamic range.
-    Previously the pipeline used q99 clipping, which collapsed the
-    product to near-zero everywhere because each factor only
-    approached ``1`` on its top 1 %.
+    The trigger raster is the **leak** field from a leaky-bucket
+    weighted D∞ accumulation: each cell consumes a curvature- and
+    slope-dependent fraction ``(1 − f_drain)`` of its through-flow
+    as trigger output and forwards only ``f_drain`` of it onward,
+    with a per-cell buoyancy storage capacity ``Q`` giving the
+    cycle period ``τ = Q / leak``. ``RunResult.trigger_potential``
+    is ``rank_normalise(leak)`` for backward-compatible display;
+    ``RunResult.leak`` carries the absolute units.
 
     Returns
     -------
     RunResult
-        The trigger-potential raster plus all diagnostic
+        The trigger / leak / cycle-period rasters plus diagnostic
         intermediates. See :class:`RunResult`.
 
     Raises
@@ -272,6 +369,11 @@ def run_model(
     if smoothing_sigma_m < 0:
         raise ValueError(
             f"smoothing_sigma_m must be non-negative, got {smoothing_sigma_m}"
+        )
+    if curvature_smoothing_sigma_m < 0:
+        raise ValueError(
+            "curvature_smoothing_sigma_m must be non-negative, "
+            f"got {curvature_smoothing_sigma_m}"
         )
     if pit_fill_epsilon < 0:
         raise ValueError(
@@ -296,6 +398,21 @@ def run_model(
     slope_rad = slope(dem64, cell_size_m)
     aspect_rad = aspect(dem64, cell_size_m)
     kprof = profile_curvature(dem64, cell_size_m)
+
+    # Curvature/slope feeding the leaky shape functions are derived
+    # from a Gaussian-smoothed copy of the raw DEM (σ =
+    # curvature_smoothing_sigma_m). Suppresses single-cell LIDAR
+    # speckle that would otherwise saturate sat(κ⁺/κ_ref) on isolated
+    # cells. σ = 0 reproduces pre-2026-05-09 behaviour exactly.
+    if curvature_smoothing_sigma_m > 0:
+        dem_for_shape = _gaussian_smooth_nan(
+            dem64, curvature_smoothing_sigma_m / float(cell_size_m)
+        )
+        slope_for_shape_raw = slope(dem_for_shape, cell_size_m)
+        kprof_for_shape_raw = profile_curvature(dem_for_shape, cell_size_m)
+    else:
+        slope_for_shape_raw = slope_rad
+        kprof_for_shape_raw = kprof
 
     sun = solar_position(when, latitude_deg, longitude_deg, elevation_m=elevation_m)
     cs = clear_sky_irradiance(
@@ -328,29 +445,69 @@ def run_model(
     inverted_filled = fill_pits(inverted_tilted, epsilon=pit_fill_epsilon)
     if resolve_flats:
         inverted_filled = _resolve_flats_fn(inverted_filled)
-    weighted_conv = flow_accumulation(inverted_filled, cell_size_m, weights=weights)
 
-    wc_norm = _rank_normalise(weighted_conv)
-    curv_norm = _rank_normalise(np.where(kprof > 0, kprof, 0.0))
-
+    # Build f_drain and q_storage from the *raw* DEM curvature and
+    # slope. Detachment geometry is a property of real terrain — the
+    # tilted / inverted surface is purely a routing device. Edge
+    # cells where the 3×3 stencil cannot resolve curvature/slope are
+    # substituted with zeros (no curvature / no slope ⇒ ``f_drain ≡
+    # f_max``, ``q_storage ≡ q_ref``), matching the same edge-NaN
+    # handling we apply to ``heating`` before passing it as weights.
     min_slope_rad = math.radians(min_slope_deg)
-    slope_mask = np.where(np.isnan(slope_rad), False, slope_rad > min_slope_rad)
-    slope_mask = slope_mask.astype(bool, copy=False)
+    slope_scale_rad = math.radians(slope_scale_deg)
+    kprof_for_shape = np.where(
+        np.isnan(kprof_for_shape_raw) & ~nan_mask, 0.0, kprof_for_shape_raw
+    )
+    slope_for_shape = np.where(
+        np.isnan(slope_for_shape_raw) & ~nan_mask, 0.0, slope_for_shape_raw
+    )
+    f_drain = f_drain_field(
+        kprof_for_shape,
+        slope_for_shape,
+        kappa_ref=kappa_ref,
+        slope_min_rad=min_slope_rad,
+        slope_scale_rad=slope_scale_rad,
+        f_min=f_min,
+        f_max=f_max,
+    )
+    q_storage = q_storage_field(
+        kprof_for_shape,
+        slope_for_shape,
+        q_ref=q_ref,
+        kappa_ref=kappa_ref,
+        slope_min_rad=min_slope_rad,
+        slope_scale_rad=slope_scale_rad,
+    )
+    # Re-mask NaN-DEM cells on the leak-shape fields — the input
+    # replacement above produced finite values everywhere; restore
+    # NaN at NaN-DEM cells to satisfy the kernel's contract.
+    f_drain = np.where(nan_mask, np.nan, f_drain)
+    q_storage = np.where(nan_mask, np.nan, q_storage)
 
-    trigger = wc_norm * curv_norm * slope_mask.astype(np.float64, copy=False)
-    # Restore NaN where the raw DEM was NaN — the multiplications
-    # above coerce NaN factors but the slope-mask cast can flip
-    # NaN-derived False back to a valid 0.0. Make the nodata
-    # convention explicit.
+    leaky = leaky_weighted_accumulation(
+        inverted_filled,
+        cell_size_m,
+        f_drain=f_drain,
+        q_storage=q_storage,
+        weights=weights,
+    )
+
+    weighted_conv = leaky.leak + leaky.forward  # pre-leak through-flow
+    trigger = _rank_normalise(leaky.leak)
+    # Restore NaN where the raw DEM was NaN — _rank_normalise already
+    # writes NaN at NaN cells, but be explicit.
     trigger = np.where(nan_mask, np.nan, trigger)
 
     return RunResult(
         trigger_potential=trigger.astype(np.float64, copy=False),
+        leak=leaky.leak,
+        forward=leaky.forward,
+        cycle_period_s=leaky.cycle_period,
+        residual_at_sinks_total=leaky.residual_at_sinks_total,
         weighted_convergence=weighted_conv.astype(np.float64, copy=False),
         heating_wm2=heating.astype(np.float64, copy=False),
         smoothed_dem_m=smoothed,
         tilted_dem_m=tilted.astype(np.float64, copy=False),
         profile_curvature=kprof.astype(np.float64, copy=False),
         slope_rad=slope_rad.astype(np.float64, copy=False),
-        slope_mask=slope_mask,
     )

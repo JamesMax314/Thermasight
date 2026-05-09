@@ -14,7 +14,9 @@ from thermal_model.viz import (
     hillshade,
     plot_aspect,
     plot_convergence,
+    plot_cycle_period,
     plot_heating,
+    plot_leak,
     plot_overlay,
     plot_profile_curvature,
     plot_slope,
@@ -285,4 +287,71 @@ def test_plot_heating_rejects_naive_datetime() -> None:
             when=when_naive,
             latitude_deg=54.2,
             longitude_deg=-2.3,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Leak and cycle period (Phase 3.1)
+# ---------------------------------------------------------------------------
+
+
+def test_plot_leak_smoke() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_leak(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        wind_from_deg=225.0,
+        wind_speed_ms=5.0,
+        resolve_flats=False,
+    )
+    # Hillshade + leak overlay = 2 images.
+    assert len(ax.images) == 2
+    plt.close(ax.figure)
+
+
+def test_plot_cycle_period_smoke() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_cycle_period(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        wind_from_deg=225.0,
+        wind_speed_ms=5.0,
+        resolve_flats=False,
+    )
+    assert len(ax.images) == 2
+    plt.close(ax.figure)
+
+
+def test_plot_cycle_period_rejects_invalid_log_bounds() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(16, height=40.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    with pytest.raises(ValueError, match="vmin_s"):
+        plot_cycle_period(
+            dem,
+            cell_size_m=5.0,
+            when=when,
+            latitude_deg=54.2,
+            longitude_deg=-2.3,
+            wind_from_deg=0.0,
+            wind_speed_ms=0.0,
+            vmin_s=0.0,  # invalid for log scale
+            vmax_s=3600.0,
+            resolve_flats=False,
         )
