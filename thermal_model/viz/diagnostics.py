@@ -624,7 +624,7 @@ def plot_leak(
     resolve_flats: bool = True,
     cmap: str | Colormap = "magma",
     alpha: float = 0.7,
-    log: bool = False,
+    log: bool = True,
     title: str | None = None,
     contours: bool = True,
     contour_levels: int | Sequence[float] = 10,
@@ -640,6 +640,11 @@ def plot_leak(
     ``[0, 1]`` companion. Use this when cross-tile magnitude
     comparison matters; rank-normalised display is fine when only
     relative ranking within a single tile matters.
+
+    Defaults to a logarithmic colour scale (``log=True``) — real leak
+    fields span several decades and a linear scale would compress the
+    bulk into the colormap floor. Pass ``log=False`` for a linear
+    rendering on synthetic / uniform fixtures.
     """
     result = run_model(
         dem,
