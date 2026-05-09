@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current phase: Phase 3.1 — leaky-bucket reformulation (Stage 1 spike landed 2026-05-09; Stage 2 production fold-in landed 2026-05-09; Mallerstang validation re-render pending).**
+**Current phase: Phase 4 — land cover + time-of-day.**
 
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
@@ -14,11 +14,12 @@ Phase 3 pipeline (energy double-counting along the flow path; no
 mechanism for the cyclic-dump regime on gentle terrain). Stage 1 of
 3.1 (a standalone leaky-bucket kernel + synthetic-fixture tests)
 landed 2026-05-09. Stage 2 (production fold-in: `run_model`,
-`RunResult`, `triggers/cluster.py`, `viz/`, CLI, docs) landed
-2026-05-09. Production `run_model` now drives the leaky kernel; the
-mirror-spur Phase 3 gate ports cleanly and energy conservation is
-pinned at the pipeline level. The formal Phase 3.1 close is gated
-on the Mallerstang validation re-render (see § Validation below).
+`RunResult`, `triggers/cluster.py`, `viz/`, CLI, docs, plus the
+Mallerstang re-render) closed 2026-05-09. Production `run_model`
+now drives the leaky kernel; energy conservation is pinned at the
+pipeline level (98.7 % of injected heat consumed as triggers on
+the Mallerstang mosaic, 1.3 % residual at sinks). See
+`docs/VALIDATION.md` § 2026-05-09 for the Mallerstang clearance.
 
 Update this header when a phase or stage completes. Do not skip
 phases. Do not start the next phase until its predecessor's gate
@@ -471,11 +472,12 @@ check matches expectations; production code untouched.
 **Cleared 2026-05-09** (commit `a8ad771` on
 `feat/leaky-accum-spike`).
 
-### Stage 2 — production fold-in (code landed 2026-05-09)
+### Stage 2 — production fold-in (closed 2026-05-09)
 
-Branch: `feat/phase3.1-leaky-pipeline-fold-in`. Code-side complete;
-the formal Stage 2 close is gated on the Mallerstang re-render
-below.
+Branch: `feat/phase3.1-leaky-pipeline-fold-in`. All code-side and
+validation items complete; Mallerstang re-render reproduced the
+Phase 3 visual gate plus the new summit-plateau dimming and
+cycle-period contrast — see `docs/VALIDATION.md` § 2026-05-09.
 
 - [x] `physics/pipeline.py:run_model` — replaced the
   `flow_accumulation(weights=heating)` + post-hoc `rank_norm(wc) ×
@@ -526,21 +528,28 @@ below.
   `nansum(leak) + residual ≡ nansum(heating)` at the pipeline
   level. New `test_run_model_cycle_period_finite_at_triggers` pins
   the τ dimensional contract.
-- [ ] **Mallerstang re-render** with parameter sweep
-  (`f_min`, `kappa_ref`, `q_ref`, `slope_scale`) documented in
-  `docs/VALIDATION.md` § Validation log under a new dated entry.
-  This is the only remaining Stage 2 item.
+- [x] **Mallerstang re-render** at 5 m under the canonical
+  validation conditions (225° @ 6 m/s, 13:00 BST mid-July). Visual
+  gate cleared: SW flanks bright, Mallerstang Edge dominant, Wild
+  Boar Fell summit-plateau interior dim (the Phase 3 artefact is
+  gone), cycle-period contrast visible (short on cliff lines, long
+  on rounded ridges). Energy-conservation closure: 98.7 % leak,
+  1.3 % residual, exact to float precision. Full write-up in
+  `docs/VALIDATION.md` § 2026-05-09. A formal parameter sweep
+  (`f_min`, `kappa_ref`, `q_ref`, `slope_scale`) was not
+  performed — the synthetic-fixture defaults survived contact
+  with real LIDAR; sensitivity-tuning is deferred to Phase 4
+  alongside the land-cover absorptivity work.
 
-**Stage 2 gate**: full test suite green (289 passed at landing,
-including 21 + 1 leaky-kernel tests, 7 pipeline tests, 10 trigger
-tests, 23 CLI tests, 29 viz tests); `run_model` outputs the new
-fields; Mallerstang trigger raster on a typical SW summer afternoon
-(225° @ 6 m/s, 13:00 BST mid-July) reproduces the Phase 3 visual
-gate (SW flanks bright, Mallerstang Edge cliff line lit, NE
-lee-side enhancement vs zero-wind baseline) **plus** dimming of
-the summit-plateau artefacts that motivated the reformulation, with
+**Stage 2 gate (cleared 2026-05-09)**: full test suite green
+(289 passed at landing, including 21 + 1 leaky-kernel tests, 7
+pipeline tests, 10 trigger tests, 23 CLI tests, 29 viz tests);
+`run_model` outputs the new fields; Mallerstang trigger raster on
+a typical SW summer afternoon (225° @ 6 m/s, 13:00 BST mid-July)
+reproduces the Phase 3 visual gate **plus** dimming of the
+summit-plateau artefacts that motivated the reformulation, with
 plausible cycle-period contrast between the cliff lines (short)
-and the rounded ridges (long). The Mallerstang gate is **pending**.
+and the rounded ridges (long).
 
 ## Phase 4 — Land cover + time-of-day
 
