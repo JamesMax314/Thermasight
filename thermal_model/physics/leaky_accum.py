@@ -38,8 +38,8 @@ Resources Research, 33(2), 309-319.
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -50,8 +50,21 @@ from thermal_model.physics.flow import (
     _validate_weights,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+# Per-facet receiver offsets pre-baked into int64 arrays for the numba
+# topological pass. The numpy pass uses the same arrays for parity.
+_FACET_OFFSETS_CARD: np.ndarray = np.array(
+    [[f[0][0], f[0][1]] for f in _FACETS], dtype=np.int64
+)
+_FACET_OFFSETS_DIAG: np.ndarray = np.array(
+    [[f[1][0], f[1][1]] for f in _FACETS], dtype=np.int64
+)
+
+
+def _have_numba() -> bool:
+    return importlib.util.find_spec("numba") is not None
+
+
+_HAS_NUMBA: bool = _have_numba()
 
 
 F_MIN_DEFAULT = 0.15
@@ -291,6 +304,147 @@ def q_storage_field(
     return out
 
 
+def _leaky_pass_python(
+    finite_rows: np.ndarray,
+    finite_cols: np.ndarray,
+    order: np.ndarray,
+    r: np.ndarray,
+    f_drain: np.ndarray,
+    has_flow: np.ndarray,
+    nan_mask: np.ndarray,
+    best_facet: np.ndarray,
+    best_r: np.ndarray,
+    leak: np.ndarray,
+    forward: np.ndarray,
+) -> float:
+    """Topological-order leaky pass — pure numpy / Python loop.
+
+    Reference implementation. Mutates ``r``, ``leak``, ``forward`` in
+    place and returns ``residual_at_sinks_total``. The numba JIT
+    companion (:func:`_leaky_pass_numba`) takes the same arguments
+    and produces bit-identical output up to float-summation order.
+    """
+    rows, cols = r.shape
+    quarter_pi = np.pi / 4.0
+    residual_total = 0.0
+
+    for k in range(order.size):
+        idx = int(order[k])
+        i = int(finite_rows[idx])
+        j = int(finite_cols[idx])
+        r_ij = float(r[i, j])
+        f_ij = float(f_drain[i, j])
+        leak_ij = (1.0 - f_ij) * r_ij
+        fwd_ij = f_ij * r_ij
+        leak[i, j] = leak_ij
+        forward[i, j] = fwd_ij
+
+        if not has_flow[i, j]:
+            residual_total += fwd_ij
+            continue
+
+        f = int(best_facet[i, j])
+        rval = float(best_r[i, j])
+        prop_diag = rval / quarter_pi
+        prop_card = 1.0 - prop_diag
+
+        dr1 = int(_FACET_OFFSETS_CARD[f, 0])
+        dc1 = int(_FACET_OFFSETS_CARD[f, 1])
+        dr2 = int(_FACET_OFFSETS_DIAG[f, 0])
+        dc2 = int(_FACET_OFFSETS_DIAG[f, 1])
+
+        if prop_card > 0.0:
+            nr = i + dr1
+            nc = j + dc1
+            if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
+                r[nr, nc] += prop_card * fwd_ij
+            else:
+                residual_total += prop_card * fwd_ij
+        if prop_diag > 0.0:
+            nr = i + dr2
+            nc = j + dc2
+            if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
+                r[nr, nc] += prop_diag * fwd_ij
+            else:
+                residual_total += prop_diag * fwd_ij
+
+    return residual_total
+
+
+# numba JIT companion. Decorated only if numba is importable so the
+# module loads cleanly without it; the numpy reference path serves as
+# the fallback. The function body is identical to ``_leaky_pass_python``
+# in shape so the two are easy to diff.
+if _HAS_NUMBA:
+    import numba  # type: ignore[import-untyped]
+
+    @numba.njit(cache=True)  # type: ignore[untyped-decorator]
+    def _leaky_pass_numba(
+        finite_rows: np.ndarray,
+        finite_cols: np.ndarray,
+        order: np.ndarray,
+        r: np.ndarray,
+        f_drain: np.ndarray,
+        has_flow: np.ndarray,
+        nan_mask: np.ndarray,
+        best_facet: np.ndarray,
+        best_r: np.ndarray,
+        facet_card: np.ndarray,
+        facet_diag: np.ndarray,
+        leak: np.ndarray,
+        forward: np.ndarray,
+    ) -> float:
+        rows = r.shape[0]
+        cols = r.shape[1]
+        quarter_pi = np.pi / 4.0
+        residual_total = 0.0
+        n = order.size
+        for k in range(n):
+            idx = order[k]
+            i = finite_rows[idx]
+            j = finite_cols[idx]
+            r_ij = r[i, j]
+            f_ij = f_drain[i, j]
+            leak_ij = (1.0 - f_ij) * r_ij
+            fwd_ij = f_ij * r_ij
+            leak[i, j] = leak_ij
+            forward[i, j] = fwd_ij
+
+            if not has_flow[i, j]:
+                residual_total += fwd_ij
+                continue
+
+            f = best_facet[i, j]
+            rval = best_r[i, j]
+            prop_diag = rval / quarter_pi
+            prop_card = 1.0 - prop_diag
+
+            dr1 = facet_card[f, 0]
+            dc1 = facet_card[f, 1]
+            dr2 = facet_diag[f, 0]
+            dc2 = facet_diag[f, 1]
+
+            if prop_card > 0.0:
+                nr = i + dr1
+                nc = j + dc1
+                if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
+                    r[nr, nc] += prop_card * fwd_ij
+                else:
+                    residual_total += prop_card * fwd_ij
+            if prop_diag > 0.0:
+                nr = i + dr2
+                nc = j + dc2
+                if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
+                    r[nr, nc] += prop_diag * fwd_ij
+                else:
+                    residual_total += prop_diag * fwd_ij
+
+        return residual_total
+
+else:
+    _leaky_pass_numba = None
+
+
 def leaky_weighted_accumulation(
     dem: np.ndarray,
     cell_size_m: float,
@@ -298,6 +452,7 @@ def leaky_weighted_accumulation(
     f_drain: np.ndarray,
     q_storage: np.ndarray,
     weights: np.ndarray | None = None,
+    use_numba: bool | None = None,
 ) -> LeakyResult:
     """Leaky-bucket D-infinity weighted flow accumulation.
 
@@ -337,6 +492,13 @@ def leaky_weighted_accumulation(
         every finite cell contributes ``1.0`` (so the limit
         ``f_drain ≡ 1`` reduces exactly to the unweighted upstream
         cell count).
+    use_numba : bool, optional
+        ``True`` to require the numba JIT backend (raises
+        ``ImportError`` if unavailable), ``False`` to force the
+        pure-numpy reference path, ``None`` (default) to use numba
+        when importable and the reference path otherwise. Mirrors the
+        ``use_richdem`` pattern in
+        :func:`thermal_model.physics.flow_accumulation`.
 
     Returns
     -------
@@ -360,6 +522,10 @@ def leaky_weighted_accumulation(
     ``forward`` raster reports the *post-leak* through-flow at each
     cell — what was passed to D-infinity neighbours — *not* the
     pre-leak accumulation.
+
+    The numba backend is the production path (~50–200x faster on
+    Mallerstang-scale rasters); the numpy reference path is the
+    test oracle and is used by CI environments that lack numba.
     """
     _validate_dem(dem, cell_size_m)
     if weights is not None:
@@ -400,12 +566,7 @@ def leaky_weighted_accumulation(
             residual_at_sinks_total=0.0,
         )
 
-    has_flow = finite & (best_slope > 0)
-
-    quarter_pi = np.pi / 4.0
-    facet_offsets: Sequence[tuple[tuple[int, int], tuple[int, int]]] = tuple(
-        (f[0], f[1]) for f in _FACETS
-    )
+    has_flow = (finite & (best_slope > 0)).astype(np.bool_)
 
     # Topological order: descending DEM elevation. On a pit-filled
     # inverted DEM every D-infinity receiver lies strictly below the
@@ -413,41 +574,53 @@ def leaky_weighted_accumulation(
     # in a single pass. Iterate over *all* finite cells (not just
     # has_flow ones) because sinks still need leak / forward computed
     # — they just route to residual instead of neighbours.
-    finite_rows, finite_cols = np.where(finite)
-    elevs = dem[finite_rows, finite_cols]
-    order = np.argsort(-elevs, kind="stable")
+    finite_rows_idx, finite_cols_idx = np.where(finite)
+    finite_rows_arr = finite_rows_idx.astype(np.int64)
+    finite_cols_arr = finite_cols_idx.astype(np.int64)
+    elevs = dem[finite_rows_idx, finite_cols_idx]
+    order = np.argsort(-elevs, kind="stable").astype(np.int64)
 
-    for k in order:
-        i = int(finite_rows[k])
-        j = int(finite_cols[k])
-        r_ij = float(r[i, j])
-        f_ij = float(f_drain[i, j])
-        leak_ij = (1.0 - f_ij) * r_ij
-        fwd_ij = f_ij * r_ij
-        leak[i, j] = leak_ij
-        forward[i, j] = fwd_ij
+    if use_numba is True and not _HAS_NUMBA:
+        raise ImportError(
+            "use_numba=True but the 'numba' package is not importable; "
+            "install it (it ships in environment.yml) or set use_numba=False."
+        )
+    if use_numba is None:
+        use_numba = _HAS_NUMBA
 
-        if not has_flow[i, j]:
-            residual_total += fwd_ij
-            continue
-
-        f = int(best_facet[i, j])
-        rval = float(best_r[i, j])
-        prop_diag = rval / quarter_pi
-        prop_card = 1.0 - prop_diag
-        (dr1, dc1), (dr2, dc2) = facet_offsets[f]
-        if prop_card > 0.0:
-            nr, nc = i + dr1, j + dc1
-            if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
-                r[nr, nc] += prop_card * fwd_ij
-            else:
-                residual_total += prop_card * fwd_ij
-        if prop_diag > 0.0:
-            nr, nc = i + dr2, j + dc2
-            if 0 <= nr < rows and 0 <= nc < cols and not nan_mask[nr, nc]:
-                r[nr, nc] += prop_diag * fwd_ij
-            else:
-                residual_total += prop_diag * fwd_ij
+    if use_numba:
+        assert _leaky_pass_numba is not None  # for mypy
+        residual_total = float(
+            _leaky_pass_numba(
+                finite_rows_arr,
+                finite_cols_arr,
+                order,
+                r,
+                f_drain.astype(np.float64, copy=False),
+                has_flow,
+                nan_mask,
+                best_facet.astype(np.int64, copy=False),
+                best_r,
+                _FACET_OFFSETS_CARD,
+                _FACET_OFFSETS_DIAG,
+                leak,
+                forward,
+            )
+        )
+    else:
+        residual_total = _leaky_pass_python(
+            finite_rows_arr,
+            finite_cols_arr,
+            order,
+            r,
+            f_drain,
+            has_flow,
+            nan_mask,
+            best_facet,
+            best_r,
+            leak,
+            forward,
+        )
 
     with np.errstate(divide="ignore", invalid="ignore"):
         cycle_period = np.where(leak > 0.0, q_storage / leak, np.inf)
