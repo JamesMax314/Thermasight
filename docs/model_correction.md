@@ -5,20 +5,20 @@
 
 **Read this before touching anything in `thermal_model/physics/`.**
 
-> **Phase 3.1 reformulation in flight (opened 2026-05-09).** The
+> **Phase 3.1 reformulation landed 2026-05-09 (Stage 2).** The
 > "weighted convergence × κ̂⁺ × slope_mask" formulation in §3 + §5
-> below is being replaced by a *leaky-bucket weighted accumulation*
-> — each cell consumes a curvature/slope-dependent fraction of its
-> through-flow as trigger output and forwards the rest, with a
-> per-cell storage capacity giving a cycle period τ as a new
-> output. This addresses two physical defects of the formulation
-> below: energy double-counting along the flow path, and the
-> absence of a cyclic-dump regime on gentle terrain. **Stage 1**
-> of 3.1 (the kernel as a standalone module) has landed. **Stage 2**
-> (production fold-in) is pending. Until Stage 2 closes, the
-> production pipeline still follows §3 + §5 of this document. The
-> full derivation of the replacement is in `docs/MODEL.md` § 11;
-> the staging is in `docs/ROADMAP.md` § Phase 3.1.
+> below is **superseded** by the leaky-bucket weighted accumulation
+> in `docs/MODEL.md` § 11 — each cell consumes a curvature/slope-
+> dependent fraction of its through-flow as trigger output and
+> forwards the rest, with a per-cell storage capacity giving a
+> cycle period τ as a new output. This addresses two physical
+> defects of the formulation below: energy double-counting along the
+> flow path, and the absence of a cyclic-dump regime on gentle
+> terrain. Production `run_model` now drives the leaky kernel;
+> §3 + §5 below are preserved as the predecessor formulation, with
+> the rationale that fed into §11. The Mallerstang validation
+> re-render that gates the formal Phase 3.1 close is in
+> `docs/ROADMAP.md` § Phase 3.1.
 
 ---
 

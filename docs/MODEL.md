@@ -4,29 +4,20 @@ This document is the technical companion to the conceptual sketch in
 `CLAUDE.md §2`. Read that first.
 
 > **Model reformulated 2026-05-07** (drift → wind-tilt) **and refined
-> the same day** (post-hoc heating × convergence multiplier →
-> heating-weighted flow accumulation). Wind enters as a terrain tilt
-> before flow accumulation (§3); heating enters as the per-cell
-> weight on the same flow accumulation (§5), so the routing intrinsically
-> integrates "where the air is warm" with "where it converges". The
-> trigger raster is then `normalise(weighted_convergence) × κ̂⁺ ×
-> slope_mask` (§7). The superseded drift formulation is preserved
-> verbatim in §10 as a record. Production code follows §1–§8; do not
-> reintroduce §10 without explicit operator approval. The full
-> rationale for both reformulations lives in
-> `docs/model_correction.md`.
+> 2026-05-09** (post-hoc rank-norm × κ̂⁺ × slope_mask multiply →
+> *leaky-bucket weighted accumulation*). Production code now follows
+> §1–§4 (the unchanged inputs: hydrological analogy, wind tilt,
+> heating field) plus **§11 (the leaky-bucket kernel)**. §5–§8 are
+> preserved as a record of the intermediate Phase 3 formulation that
+> §11 supersedes; do not reintroduce them in production code without
+> operator approval. The superseded wind-drift formulation is
+> preserved verbatim in §10. The full rationale for both
+> reformulations lives in `docs/model_correction.md`.
 
-> **Phase 3.1 reformulation in flight (opened 2026-05-09).** The
-> §5–§7 production model double-counts energy along the flow path
-> (every cell on a path inherits its full upstream catchment) and
-> has no notion of cycle time on gentle terrain (where the boundary
-> layer fills then dumps in one release rather than steady
-> triggering). The replacement is a *leaky-bucket weighted
-> accumulation* — see §11 below. **Stage 1** of 3.1 — the kernel
-> as a standalone module — has landed (commit `a8ad771`); production
-> `run_model` is unchanged in the meantime. **Stage 2** (the
-> production fold-in) is gated on Mallerstang validation; see
-> `docs/ROADMAP.md` § Phase 3.1.
+> **Phase 3.1 status (Stage 2 landed 2026-05-09).** Production
+> `run_model` is wired to the leaky-bucket kernel. Mallerstang
+> validation re-render is pending; see `docs/ROADMAP.md`
+> § Phase 3.1 for the visual-gate criteria.
 
 ---
 
@@ -192,7 +183,17 @@ heating field never sees the smoothed or wind-tilted DEM.
 
 ---
 
-## 5. Heating-weighted convergence (Phase 3)
+## 5. Heating-weighted convergence (Phase 3, superseded)
+
+> **Superseded by §11 (Phase 3.1, 2026-05-09).** §5–§7 below describe
+> the intermediate Phase 3 formulation in which heating enters as a
+> per-cell weight on D∞ flow accumulation and the trigger raster is
+> formed by a post-hoc multiply against rank-normalised positive
+> profile curvature and a slope mask. Production code no longer
+> follows this path; it routes through the leaky-bucket kernel of
+> §11 instead. Read §5–§7 for the historical formulation and the
+> reasoning that fed into §11; consult §11 for the production
+> formulation.
 
 Heating and convergence are not combined as separate fields with a
 post-hoc multiplier. Instead, the heating field $H(\mathbf{x})$ in
@@ -445,13 +446,16 @@ stating it is *not* part of the trigger-prediction pipeline. See
 
 ---
 
-## 11. Leaky-bucket reformulation (Phase 3.1, in flight)
+## 11. Leaky-bucket reformulation (Phase 3.1, production)
 
-**Stage 1 of Phase 3.1 has landed in `thermal_model/physics/leaky_accum.py`
-as a standalone kernel. Stage 2 (production fold-in) is pending —
-see `docs/ROADMAP.md` § Phase 3.1.** Until Stage 2 closes, the
-production pipeline still uses the §5–§7 formulation; this section
-documents the replacement.
+**Production formulation since 2026-05-09.** This section is the
+canonical description of `thermal_model.physics.run_model` and the
+underlying `leaky_weighted_accumulation` kernel
+(`thermal_model.physics.leaky_accum`). §5–§7 above are preserved as
+the historical predecessor; do not reintroduce them in production
+code without operator approval. The Mallerstang re-render that
+gates the formal Phase 3.1 close is documented in
+`docs/ROADMAP.md` § Phase 3.1.
 
 ### 11.1 Why §5–§7 needs replacing
 

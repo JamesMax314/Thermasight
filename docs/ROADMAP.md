@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current phase: Phase 3.1 — leaky-bucket reformulation (Stage 1 spike landed 2026-05-09; Stage 2 fold-in pending).**
+**Current phase: Phase 3.1 — leaky-bucket reformulation (Stage 1 spike landed 2026-05-09; Stage 2 production fold-in landed 2026-05-09; Mallerstang validation re-render pending).**
 
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
@@ -12,12 +12,13 @@ Wild Boar Fell + Mallerstang mosaic (see Phase 3 § Validation log).
 Phase 3.1 opened 2026-05-09 to address two physical defects of the
 Phase 3 pipeline (energy double-counting along the flow path; no
 mechanism for the cyclic-dump regime on gentle terrain). Stage 1 of
-3.1 — a standalone leaky-bucket weighted accumulation kernel +
-synthetic-fixture tests — has landed; Stage 2 (production
-integration) is gated on visual validation against Mallerstang. The
-production `run_model` is unchanged in the meantime; the new kernel
-is in the codebase as `physics.leaky_weighted_accumulation` but is
-not wired to the pipeline.
+3.1 (a standalone leaky-bucket kernel + synthetic-fixture tests)
+landed 2026-05-09. Stage 2 (production fold-in: `run_model`,
+`RunResult`, `triggers/cluster.py`, `viz/`, CLI, docs) landed
+2026-05-09. Production `run_model` now drives the leaky kernel; the
+mirror-spur Phase 3 gate ports cleanly and energy conservation is
+pinned at the pipeline level. The formal Phase 3.1 close is gated
+on the Mallerstang validation re-render (see § Validation below).
 
 Update this header when a phase or stage completes. Do not skip
 phases. Do not start the next phase until its predecessor's gate
@@ -470,58 +471,76 @@ check matches expectations; production code untouched.
 **Cleared 2026-05-09** (commit `a8ad771` on
 `feat/leaky-accum-spike`).
 
-### Stage 2 — production fold-in (pending)
+### Stage 2 — production fold-in (code landed 2026-05-09)
 
-Branch: `feat/phase3.1-leaky-pipeline-fold-in` (not yet created).
-Stage 2 is gated on Stage 1's visual gate (above) and an
-operator-confirmed Mallerstang re-render against the existing
-Phase 3 baseline.
+Branch: `feat/phase3.1-leaky-pipeline-fold-in`. Code-side complete;
+the formal Stage 2 close is gated on the Mallerstang re-render
+below.
 
-- [ ] `physics/pipeline.py:run_model` — replace the
+- [x] `physics/pipeline.py:run_model` — replaced the
   `flow_accumulation(weights=heating)` + post-hoc `rank_norm(wc) ×
   rank_norm(κ⁺) × slope_mask` step with
   `leaky_weighted_accumulation(...)`. Curvature and slope feed
-  `f_drain_field` and `q_storage_field`; production trigger raster
-  becomes `leak` (rank-normalised for backward-compatible display).
-- [ ] `physics/pipeline.py:RunResult` — gain `leak` (W or
-  rank-normalised), `forward` (W, diagnostic), `cycle_period_s`
-  (s), `residual_at_sinks_total` (scalar). Drop `slope_mask` as a
-  public field (still computed internally for `f_drain`).
-  `weighted_convergence` becomes the sum `forward + leak` for
-  backward continuity.
-- [ ] `physics/leaky_accum.py` — companion `_leaky_pass_numba`
-  JIT-compiled topological sweep, auto-selected when `numba` is
-  importable. Pure-numpy reference path stays as the test oracle,
-  mirroring the richdem-vs-numpy backend pattern in `flow.py`.
-- [ ] `cli.py` — `run` subcommand gains `--f-min`, `--kappa-ref`,
-  `--q-ref`, `--slope-scale`. New `--cycle-period-out` (optional
-  GeoTIFF). `preview --what` gains `cycle-period` and `leak`.
-- [ ] `viz/` — new `plot_cycle_period` (log-scale plasma_r,
-  no-trigger cells masked light grey) and `plot_leak` plotters.
-- [ ] `triggers/cluster.py` — clustering runs on `leak` rather
-  than `trigger_potential`. `TriggerPoint` gains
-  `mean_cycle_period_s`. KMZ description includes cycle period.
-- [ ] `docs/MODEL.md` — promote §11 (currently the future-pointer
-  section) to mainline §5–§7. Demote the current §5–§7 to §10.x
-  as "Variant C (superseded)".
-- [ ] `docs/model_correction.md` §3 + §6 + §8 — note the
-  leaky-bucket evolution; the integration-by-routing principle
-  carries over but the per-cell consumption mechanism changes.
-- [ ] `tests/test_physics_pipeline.py` — mirror-spur tests assert
-  against `RunResult.leak`; new `test_run_model_energy_conservation`
-  invariant; new `test_run_model_cycle_period_finite_at_triggers`.
+  `f_drain_field` and `q_storage_field` (computed from the **raw**
+  DEM, matching the existing convention). Production trigger raster
+  is `rank_normalise(leak)` for backward-compatible display.
+- [x] `physics/pipeline.py:RunResult` — gained `leak` (W/m²),
+  `forward` (W/m², diagnostic), `cycle_period_s` (s),
+  `residual_at_sinks_total` (scalar). Dropped `slope_mask` as a
+  public field. `weighted_convergence` is now `leak + forward`
+  (the pre-leak through-flow), preserved for backward compatibility
+  with the existing viz / KMZ consumers.
+- [x] `physics/leaky_accum.py` — `_leaky_pass_numba` JIT-compiled
+  topological sweep auto-selected when `numba` is importable; the
+  pure-numpy reference path stays as the test oracle. Cross-backend
+  agreement pinned by `test_leaky_accum_numba_and_numpy_agree` on
+  random fixtures (1e-12 rtol). Bench: 4× speedup on a 1024×1024
+  raster (numpy 2.07 s → numba 0.50 s); for Mallerstang's 75 M
+  cells this brings a single run from minutes to ~30 s.
+- [x] `cli.py` — `run` gained `--f-min`, `--f-max`, `--kappa-ref`,
+  `--q-ref`, `--slope-scale`, `--leak-out` (optional GeoTIFF for
+  absolute leak), `--cycle-period-out` (optional GeoTIFF for
+  cycle period; +inf cells written as nodata). `preview --what`
+  gained `leak` and `cycle-period`.
+- [x] `viz/` — new `plot_leak` and `plot_cycle_period` plotters
+  exported from `viz/__init__.py`. `plot_cycle_period` uses
+  `plasma_r` so light = short cycle (consistent thermals) and dark
+  = long cycle (cyclic dumps); non-leaking cells render
+  transparent against the hillshade backdrop.
+- [x] `triggers/cluster.py` — `cluster_triggers` gained an optional
+  `cycle_period_s` parameter. `TriggerPoint` gained
+  `mean_cycle_period_s` (None when no cycle raster supplied).
+  CLI defaults to clustering on `RunResult.leak` (absolute units)
+  with `cycle_period_s=result.cycle_period_s`. KMZ description
+  includes the cycle period in the most pilot-readable unit
+  (s / min / hr).
+- [x] `docs/MODEL.md` — added a "superseded by §11" banner on §5;
+  §11 now flagged as the canonical production formulation.
+  §5–§7 retained as the historical predecessor record.
+- [x] `docs/model_correction.md` — top-of-doc banner updated to
+  reflect Stage 2 landing; §3 + §5 of that document are now the
+  predecessor formulation.
+- [x] `tests/test_physics_pipeline.py` — mirror-spur tests assert
+  against `RunResult.leak` (mirror-spur S>N still holds; relighting
+  narrows the gap). New `test_run_model_energy_conservation` pins
+  `nansum(leak) + residual ≡ nansum(heating)` at the pipeline
+  level. New `test_run_model_cycle_period_finite_at_triggers` pins
+  the τ dimensional contract.
 - [ ] **Mallerstang re-render** with parameter sweep
   (`f_min`, `kappa_ref`, `q_ref`, `slope_scale`) documented in
   `docs/VALIDATION.md` § Validation log under a new dated entry.
+  This is the only remaining Stage 2 item.
 
-**Stage 2 gate**: full test suite green; `run_model` outputs the
-new fields; Mallerstang trigger raster on a typical SW summer
-afternoon (225° @ 6 m/s, 13:00 BST mid-July) reproduces the Phase 3
-visual gate (SW flanks bright, Mallerstang Edge cliff line lit, NE
+**Stage 2 gate**: full test suite green (289 passed at landing,
+including 21 + 1 leaky-kernel tests, 7 pipeline tests, 10 trigger
+tests, 23 CLI tests, 29 viz tests); `run_model` outputs the new
+fields; Mallerstang trigger raster on a typical SW summer afternoon
+(225° @ 6 m/s, 13:00 BST mid-July) reproduces the Phase 3 visual
+gate (SW flanks bright, Mallerstang Edge cliff line lit, NE
 lee-side enhancement vs zero-wind baseline) **plus** dimming of
 the summit-plateau artefacts that motivated the reformulation, with
 plausible cycle-period contrast between the cliff lines (short)
-and the rounded ridges (long).
+and the rounded ridges (long). The Mallerstang gate is **pending**.
 
 ## Phase 4 — Land cover + time-of-day
 
