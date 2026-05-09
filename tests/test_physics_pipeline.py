@@ -25,10 +25,14 @@ import numpy as np
 import pytest
 
 from thermal_model.physics import run_model
-from thermal_model.physics.flow import flow_accumulation
 from thermal_model.physics.heating import heating_field
 from thermal_model.physics.hydrology import fill_pits
-from thermal_model.physics.pipeline import _gaussian_smooth_nan, _rank_normalise
+from thermal_model.physics.leaky_accum import (
+    f_drain_field,
+    leaky_weighted_accumulation,
+    q_storage_field,
+)
+from thermal_model.physics.pipeline import _gaussian_smooth_nan
 from thermal_model.physics.wind_tilt import wind_tilt_ramp
 from thermal_model.solar.irradiance import clear_sky_irradiance, slope_irradiance
 from thermal_model.solar.position import solar_position
@@ -135,48 +139,70 @@ def test_mirror_spur_south_outscores_north_at_noon_midsummer() -> None:
 def test_mirror_spur_relit_north_rises_toward_south() -> None:
     """Removing the cast shadow (all-sunlit) lifts the N-spur trigger.
 
-    A purely *local* multiplier would not produce this effect at all if
-    the original difference came from the local shadow mask zeroing
+    A purely *local* multiplier would not produce this effect at all
+    if the original difference came from the local shadow mask zeroing
     the cell — relighting that local cell would lift it directly. The
     interesting check is that the *upstream* warm-air transport via
-    weighted accumulation accounts for a meaningful share of the gap:
-    relighting the shadowed catchment should narrow (or close) the
-    south-vs-north gap, not just shuffle it.
+    the leaky weighted accumulation accounts for a meaningful share
+    of the gap: relighting the shadowed catchment should narrow the
+    south-vs-north leak gap, not just shuffle it.
     """
     dem = _mirror_spur_dem()
     sun = solar_position(NOON_MIDSUMMER, LAT_DEG, LON_DEG, elevation_m=130.0)
     cs = clear_sky_irradiance(NOON_MIDSUMMER, LAT_DEG, LON_DEG, elevation_m=130.0)
     slope_rad = slope(dem, CELL_SIZE_M)
     aspect_rad = aspect(dem, CELL_SIZE_M)
+    kprof = profile_curvature(dem, CELL_SIZE_M)
     irr = slope_irradiance(slope_rad, aspect_rad, sun, cs)
 
     # All-sunlit shadow mask: every cell receives full beam.
     sunlit = np.ones_like(dem)
-
     heating = heating_field(irr, sunlit)
     weights = np.where(np.isnan(heating), 0.0, heating)
 
-    # Same routing as run_model, with zero wind so the only asymmetry
-    # left is the slope-projected irradiance (S-faces hit more
-    # squarely than N-faces). The cast-shadow asymmetry is gone.
+    # Same leaky routing as run_model, with zero wind so the only
+    # asymmetry left is the slope-projected irradiance (S-faces hit
+    # more squarely than N-faces). The cast-shadow asymmetry is gone.
     smoothed = _gaussian_smooth_nan(dem, sigma_cells=5.0 / CELL_SIZE_M)
     tilted = wind_tilt_ramp(
         smoothed, CELL_SIZE_M, wind_from_deg=0.0, wind_speed_ms=0.0, k=0.03
     )
     inverted = float(np.nanmax(tilted)) - tilted
     filled = fill_pits(inverted, epsilon=1.0e-3)
-    weighted_conv = flow_accumulation(filled, CELL_SIZE_M, weights=weights)
 
-    kprof = profile_curvature(dem, CELL_SIZE_M)
-    wc_norm = _rank_normalise(weighted_conv)
-    curv_norm = _rank_normalise(np.where(kprof > 0, kprof, 0.0))
-    slope_mask = (slope_rad > np.radians(2.5)).astype(np.float64)
-    relit_trigger = wc_norm * curv_norm * slope_mask
+    # Build f_drain / q_storage with the same defaults as run_model.
+    nan_mask = np.isnan(dem)
+    kprof_clean = np.where(np.isnan(kprof) & ~nan_mask, 0.0, kprof)
+    slope_clean = np.where(np.isnan(slope_rad) & ~nan_mask, 0.0, slope_rad)
+    f_drain = f_drain_field(
+        kprof_clean,
+        slope_clean,
+        kappa_ref=0.005,
+        slope_min_rad=np.radians(2.5),
+        slope_scale_rad=np.radians(15.0),
+    )
+    q_storage = q_storage_field(
+        kprof_clean,
+        slope_clean,
+        q_ref=1.0e6,
+        kappa_ref=0.005,
+        slope_min_rad=np.radians(2.5),
+        slope_scale_rad=np.radians(15.0),
+    )
+    f_drain = np.where(nan_mask, np.nan, f_drain)
+    q_storage = np.where(nan_mask, np.nan, q_storage)
 
-    relit_south, relit_north = _split_spur_means(relit_trigger)
+    relit_result = leaky_weighted_accumulation(
+        filled,
+        CELL_SIZE_M,
+        f_drain=f_drain,
+        q_storage=q_storage,
+        weights=weights,
+    )
+    relit_south, relit_north = _split_spur_means(relit_result.leak)
     relit_gap = relit_south - relit_north
 
-    # Reference run with cast shadows in play.
+    # Reference run with cast shadows in play (run_model default).
     reference = run_model(
         dem,
         CELL_SIZE_M,
@@ -187,19 +213,18 @@ def test_mirror_spur_relit_north_rises_toward_south() -> None:
         wind_speed_ms=0.0,
         smoothing_sigma_m=5.0,
     )
-    ref_south, ref_north = _split_spur_means(reference.trigger_potential)
+    ref_south, ref_north = _split_spur_means(reference.leak)
     ref_gap = ref_south - ref_north
 
-    # Relighting must close the south-vs-north gap (or at least narrow
-    # it). A *local* multiplier would not necessarily produce this
-    # effect from the *upstream* relighting alone, since the local
-    # shadow mask at the convergent cell is the same in both runs at
-    # noon midsummer (the spur tips themselves are sunlit). The fact
-    # that the gap shrinks here means the routing is transporting
-    # upstream warmth, which is what we want.
+    # Relighting must narrow the S-vs-N leak gap. A purely local
+    # consumption mechanism would not produce this effect from
+    # *upstream* relighting alone — the spur tips themselves are
+    # sunlit at noon midsummer so the local mask is unchanged. The
+    # gap shrinking confirms the leaky kernel transports upstream
+    # warmth via the routing.
     assert relit_gap < ref_gap, (
         f"relit gap {relit_gap} should be smaller than reference "
-        f"gap {ref_gap}; weighted accumulation may not be transporting "
+        f"gap {ref_gap}; leaky kernel may not be transporting "
         f"upstream warmth"
     )
 
@@ -242,6 +267,72 @@ def test_run_model_propagates_dem_nan() -> None:
     assert np.isnan(result.weighted_convergence[0, 0])
     assert np.isnan(result.smoothed_dem_m[0, 0])
     assert np.isnan(result.tilted_dem_m[0, 0])
+
+
+def test_run_model_energy_conservation() -> None:
+    """sum(leak) + residual_at_sinks_total ≡ sum(heating) within float tol.
+
+    The leaky kernel does not destroy energy: every unit of injected
+    heating either leaks at some cell along its path or escapes at a
+    sink / boundary. This is the tightest invariant we have on
+    ``run_model`` and catches almost any wiring error in the
+    pipeline's accumulation step. The trigger raster is rank-normed
+    for display so its sum has no physical meaning; the conservation
+    invariant lives on ``leak`` and ``residual_at_sinks_total``.
+    """
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=180.0,
+        wind_speed_ms=3.0,
+        smoothing_sigma_m=5.0,
+    )
+
+    # NaN-DEM-edge cells in heating_wm2 are substituted with 0.0
+    # before being passed to the leaky kernel as weights. nansum
+    # ignores those NaNs anyway, so the closure check uses
+    # nansum(heating_wm2) as the total injected.
+    total_leak = float(np.nansum(result.leak))
+    total_input = float(np.nansum(result.heating_wm2))
+    np.testing.assert_allclose(
+        total_leak + result.residual_at_sinks_total,
+        total_input,
+        rtol=1e-9,
+        atol=1e-9,
+    )
+
+
+def test_run_model_cycle_period_finite_at_triggers() -> None:
+    """cycle_period_s is finite where leak > 0; +inf where leak == 0.
+
+    Pins the dimensional relationship between the cycle period
+    raster and the leak raster (τ = Q / leak) at the pipeline level,
+    not just at the kernel level.
+    """
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=0.0,
+        wind_speed_ms=0.0,
+        smoothing_sigma_m=5.0,
+    )
+
+    leaking = result.leak > 0
+    not_leaking = result.leak == 0
+
+    # At least some cells must leak (otherwise the test is vacuous).
+    assert leaking.any()
+    assert np.all(np.isfinite(result.cycle_period_s[leaking]))
+    assert np.all(result.cycle_period_s[leaking] > 0)
+    assert np.all(np.isinf(result.cycle_period_s[not_leaking]))
 
 
 def test_run_model_invalid_inputs() -> None:
