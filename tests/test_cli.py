@@ -201,6 +201,71 @@ def test_preview_heating_rejects_naive_datetime(synthetic_dem_path: Path) -> Non
         )
 
 
+@pytest.mark.parametrize(
+    "what",
+    ["trigger", "weighted-convergence", "leak", "cycle-period"],
+)
+def test_preview_wind_views_write_png(
+    synthetic_dem_path: Path, tmp_path: Path, what: str
+) -> None:
+    """The four wind-requiring preview choices each render a PNG."""
+    out = tmp_path / f"{what}.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            what,
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--wind-from",
+            "225",
+            "--wind-speed",
+            "5",
+            "--no-resolve-flats",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_run_writes_trigger_leak_and_cycle_outputs(
+    synthetic_dem_path: Path, tmp_path: Path
+) -> None:
+    """The run subcommand can emit all three rasters when flags are set."""
+    trigger_out = tmp_path / "trigger.tif"
+    leak_out = tmp_path / "leak.tif"
+    cycle_out = tmp_path / "cycle.tif"
+    rc = main(
+        [
+            "run",
+            "--dem",
+            str(synthetic_dem_path),
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--wind-from",
+            "225",
+            "--wind-speed",
+            "5",
+            "--no-resolve-flats",
+            "--out",
+            str(trigger_out),
+            "--leak-out",
+            str(leak_out),
+            "--cycle-period-out",
+            str(cycle_out),
+        ]
+    )
+    assert rc == 0
+    assert trigger_out.exists() and trigger_out.stat().st_size > 0
+    assert leak_out.exists() and leak_out.stat().st_size > 0
+    assert cycle_out.exists() and cycle_out.stat().st_size > 0
+
+
 def test_mosaic_cli_writes_output(tmp_path: Path, synthetic_dem_path: Path) -> None:
     # The synthetic_dem fixture is a single tile; mosaic-of-one is a
     # valid (degenerate) call and the smallest end-to-end exercise.
