@@ -14,6 +14,10 @@ dependencies:
   - fiona
   # Hydrology / flow accumulation. Use D∞ in production code.
   - richdem
+  # JIT for the leaky-bucket accumulation pass (Phase 3.1). The pure-numpy
+  # reference path stays as the test oracle; numba is only used for the
+  # production accumulation kernel where the topological loop is hot.
+  - numba
   # Solar position and clear-sky irradiance.
   - pvlib-python
   # Plotting (diagnostics only).

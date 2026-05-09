@@ -27,6 +27,7 @@ from thermal_model.physics import (
     fill_pits,
     flow_accumulation,
     heating_field,
+    run_model,
 )
 from thermal_model.solar import (
     cast_shadow_mask,
@@ -451,6 +452,148 @@ def plot_heating(
         vmax=vmax,
         alpha=alpha,
         label="heating (W/m²)",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
+def plot_trigger_potential(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    wind_from_deg: float,
+    wind_speed_ms: float,
+    ax: Axes | None = None,
+    wind_tilt_k: float = 0.03,
+    smoothing_sigma_m: float = 10.0,
+    min_slope_deg: float = 2.5,
+    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    resolve_flats: bool = True,
+    cmap: str | Colormap = "magma",
+    alpha: float = 0.7,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Trigger-potential raster overlaid on a hillshade backdrop.
+
+    Runs the full Phase 3 pipeline via
+    :func:`thermal_model.physics.run_model` and overlays the result
+    on the Lambertian hillshade. Bright cells mark predicted
+    ground-level thermal source/trigger locations.
+    """
+    result = run_model(
+        dem,
+        cell_size_m,
+        when,
+        latitude_deg,
+        longitude_deg,
+        wind_from_deg=wind_from_deg,
+        wind_speed_ms=wind_speed_ms,
+        wind_tilt_k=wind_tilt_k,
+        smoothing_sigma_m=smoothing_sigma_m,
+        min_slope_deg=min_slope_deg,
+        absorptivity=absorptivity,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+        resolve_flats=resolve_flats,
+    )
+
+    if title is None:
+        title = (
+            f"Trigger potential T — {when.isoformat(timespec='minutes')}\n"
+            f"wind from {wind_from_deg:.0f}° @ {wind_speed_ms:.1f} m/s, "
+            f"k={wind_tilt_k}"
+        )
+
+    return plot_overlay(
+        dem,
+        result.trigger_potential,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=False,
+        vmin=0.0,
+        vmax=1.0,
+        alpha=alpha,
+        label="trigger potential T",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
+def plot_weighted_convergence(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    wind_from_deg: float,
+    wind_speed_ms: float,
+    ax: Axes | None = None,
+    wind_tilt_k: float = 0.03,
+    smoothing_sigma_m: float = 10.0,
+    min_slope_deg: float = 2.5,
+    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    resolve_flats: bool = True,
+    cmap: str | Colormap = "magma",
+    alpha: float = 0.6,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Heating-weighted D∞ flow accumulation overlay on a hillshade.
+
+    The intermediate quantity from the Phase 3 pipeline: total upstream
+    W/m² × cell-count flowing through each cell on the inverted, wind-
+    tilted DEM. Bright lineaments are convergence corridors that have
+    inherited warmth from sunlit upstream catchments. Logged via
+    :class:`matplotlib.colors.LogNorm` since the dynamic range
+    spans several decades.
+    """
+    result = run_model(
+        dem,
+        cell_size_m,
+        when,
+        latitude_deg,
+        longitude_deg,
+        wind_from_deg=wind_from_deg,
+        wind_speed_ms=wind_speed_ms,
+        wind_tilt_k=wind_tilt_k,
+        smoothing_sigma_m=smoothing_sigma_m,
+        min_slope_deg=min_slope_deg,
+        absorptivity=absorptivity,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+        resolve_flats=resolve_flats,
+    )
+
+    if title is None:
+        title = (
+            f"Heating-weighted convergence — {when.isoformat(timespec='minutes')}\n"
+            f"wind from {wind_from_deg:.0f}° @ {wind_speed_ms:.1f} m/s, "
+            f"k={wind_tilt_k}"
+        )
+
+    return plot_overlay(
+        dem,
+        result.weighted_convergence,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=True,
+        alpha=alpha,
+        label="upstream W/m² × cells (log)",
         title=title,
         contours=contours,
         contour_levels=contour_levels,
