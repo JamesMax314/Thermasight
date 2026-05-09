@@ -27,9 +27,16 @@ _PREVIEW_CHOICES = (
     "heating",
     "trigger",
     "weighted-convergence",
+    "leak",
+    "cycle-period",
     "all",
 )
-_WIND_REQUIRING_CHOICES = ("trigger", "weighted-convergence")
+_WIND_REQUIRING_CHOICES = (
+    "trigger",
+    "weighted-convergence",
+    "leak",
+    "cycle-period",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -177,11 +184,67 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preview.add_argument(
+        "--curvature-smoothing-sigma",
+        type=float,
+        default=10.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (metres) for the DEM smoothing applied before "
+            "curvature and slope are derived for the leaky shape functions. "
+            "Suppresses single-cell LIDAR speckle in κ⁺. Independent of "
+            "--smoothing-sigma (which only affects routing). Default 10 m. "
+            "Pass 0 to disable (raw curvature feeds the shape functions, "
+            "reproducing pre-2026-05-09 behaviour)."
+        ),
+    )
+    preview.add_argument(
         "--min-slope",
         type=float,
         default=2.5,
         metavar="DEG",
-        help="Minimum slope (degrees) for trigger candidacy. Default 2.5°.",
+        help=(
+            "Slope (degrees) below which a cell forwards everything (no leak). "
+            "Default 2.5°. See docs/MODEL.md §11."
+        ),
+    )
+    preview.add_argument(
+        "--slope-scale",
+        type=float,
+        default=15.0,
+        metavar="DEG",
+        help="Slope reference scale (degrees) for the leak shape. Default 15°.",
+    )
+    preview.add_argument(
+        "--kappa-ref",
+        type=float,
+        default=0.005,
+        metavar="ONEPERMETRE",
+        help=(
+            "Reference profile-curvature scale (1/m) for the leak shape. "
+            "Default 0.005 1/m."
+        ),
+    )
+    preview.add_argument(
+        "--q-ref",
+        type=float,
+        default=1.0e6,
+        metavar="JM2",
+        help=(
+            "Reference buoyancy storage capacity (J/m²) for the cycle period. "
+            "Default 1e6 J/m²."
+        ),
+    )
+    preview.add_argument(
+        "--f-min",
+        type=float,
+        default=0.15,
+        help="Skimming floor on the drain fraction (default 0.15).",
+    )
+    preview.add_argument(
+        "--f-max",
+        type=float,
+        default=1.0,
+        help="Maximum drain fraction (default 1.0).",
     )
     preview.add_argument(
         "--no-resolve-flats",
@@ -287,11 +350,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Gaussian smoothing scale (m) before flow routing. Default 10.",
     )
     run.add_argument(
+        "--curvature-smoothing-sigma",
+        type=float,
+        default=10.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (m) for the DEM smoothing applied before curvature "
+            "and slope feed the leaky shape functions. Suppresses single-cell "
+            "LIDAR speckle in κ⁺. Independent of --smoothing-sigma. Default 10. "
+            "Pass 0 to reproduce pre-2026-05-09 behaviour."
+        ),
+    )
+    run.add_argument(
         "--min-slope",
         type=float,
         default=2.5,
         metavar="DEG",
-        help="Minimum slope (degrees) for trigger candidacy. Default 2.5°.",
+        help=(
+            "Slope (degrees) below which a cell forwards everything (no leak). "
+            "Default 2.5°. See docs/MODEL.md §11."
+        ),
+    )
+    run.add_argument(
+        "--slope-scale",
+        type=float,
+        default=15.0,
+        metavar="DEG",
+        help="Slope reference scale (degrees) for the leak shape. Default 15°.",
+    )
+    run.add_argument(
+        "--kappa-ref",
+        type=float,
+        default=0.005,
+        metavar="ONEPERMETRE",
+        help=(
+            "Reference profile-curvature scale (1/m) for the leak shape. "
+            "Default 0.005 1/m."
+        ),
+    )
+    run.add_argument(
+        "--q-ref",
+        type=float,
+        default=1.0e6,
+        metavar="JM2",
+        help=(
+            "Reference buoyancy storage capacity (J/m²) for the cycle period. "
+            "Default 1e6 J/m²."
+        ),
+    )
+    run.add_argument(
+        "--f-min",
+        type=float,
+        default=0.15,
+        help="Skimming floor on the drain fraction (default 0.15).",
+    )
+    run.add_argument(
+        "--f-max",
+        type=float,
+        default=1.0,
+        help="Maximum drain fraction (default 1.0).",
     )
     run.add_argument(
         "--absorptivity",
@@ -330,6 +447,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional KMZ output for clustered trigger points.",
     )
     run.add_argument(
+        "--leak-out",
+        type=Path,
+        default=None,
+        help=(
+            "Optional GeoTIFF for the absolute trigger leak (W/m²). The "
+            "primary --out raster is rank-normalised in [0, 1] for "
+            "backward-compatible display; this flag exposes the absolute "
+            "leak field for cross-tile comparison."
+        ),
+    )
+    run.add_argument(
+        "--cycle-period-out",
+        type=Path,
+        default=None,
+        help=(
+            "Optional GeoTIFF for the buoyancy cycle period τ (seconds). "
+            "Cells with no triggering carry +inf — translated to the "
+            "raster nodata sentinel on write."
+        ),
+    )
+    run.add_argument(
         "--cluster-quantile",
         type=float,
         default=0.95,
@@ -364,7 +502,9 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     from thermal_model.viz import (
         plot_aspect,
         plot_convergence,
+        plot_cycle_period,
         plot_heating,
+        plot_leak,
         plot_profile_curvature,
         plot_slope,
         plot_trigger_potential,
@@ -396,15 +536,30 @@ def _cmd_preview(args: argparse.Namespace) -> int:
                 "wind_speed_ms": float(args.wind_speed),
                 "wind_tilt_k": float(args.wind_tilt_k),
                 "smoothing_sigma_m": float(args.smoothing_sigma),
+                "curvature_smoothing_sigma_m": float(args.curvature_smoothing_sigma),
                 "min_slope_deg": float(args.min_slope),
                 "resolve_flats": bool(args.resolve_flats),
             }
         )
-        wind_plotter = (
-            plot_trigger_potential
-            if args.what == "trigger"
-            else plot_weighted_convergence
-        )
+        # leak / cycle-period plotters accept the new leak-shape params;
+        # the older trigger / weighted-convergence plotters do not, so
+        # only pass them through for the relevant plotters.
+        if args.what in ("leak", "cycle-period"):
+            kwargs.update(
+                {
+                    "slope_scale_deg": float(args.slope_scale),
+                    "kappa_ref": float(args.kappa_ref),
+                    "q_ref": float(args.q_ref),
+                    "f_min": float(args.f_min),
+                    "f_max": float(args.f_max),
+                }
+            )
+        wind_plotter = {
+            "trigger": plot_trigger_potential,
+            "weighted-convergence": plot_weighted_convergence,
+            "leak": plot_leak,
+            "cycle-period": plot_cycle_period,
+        }[args.what]
         fig, ax = plt.subplots(figsize=(9, 8), dpi=args.dpi)
         wind_plotter(dem.elevation_m, dem.cell_size_m, when, lat, lon, ax=ax, **kwargs)
     else:
@@ -510,7 +665,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         wind_speed_ms=float(args.wind_speed),
         wind_tilt_k=float(args.wind_tilt_k),
         smoothing_sigma_m=float(args.smoothing_sigma),
+        curvature_smoothing_sigma_m=float(args.curvature_smoothing_sigma),
         min_slope_deg=float(args.min_slope),
+        slope_scale_deg=float(args.slope_scale),
+        kappa_ref=float(args.kappa_ref),
+        q_ref=float(args.q_ref),
+        f_min=float(args.f_min),
+        f_max=float(args.f_max),
         absorptivity=helper_kwargs["absorptivity"],
         elevation_m=helper_kwargs.get("elevation_m"),
         linke_turbidity=helper_kwargs["linke_turbidity"],
@@ -520,11 +681,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
     write_raster_like(args.out, result.trigger_potential, dem)
     print(f"wrote {args.out}")
 
+    if args.leak_out is not None:
+        write_raster_like(args.leak_out, result.leak, dem)
+        print(f"wrote {args.leak_out}")
+
+    if args.cycle_period_out is not None:
+        # +inf cells (no trigger) are translated to NaN before write so
+        # the GeoTIFF's nodata sentinel applies; cells that *do* trigger
+        # carry their finite cycle period.
+        import numpy as np
+
+        cycle_finite = np.where(
+            np.isfinite(result.cycle_period_s), result.cycle_period_s, np.nan
+        )
+        write_raster_like(args.cycle_period_out, cycle_finite, dem)
+        print(f"wrote {args.cycle_period_out}")
+
     if args.kmz is not None:
+        # Cluster on absolute leak (W/m²), not the rank-normalised
+        # trigger raster, so the KMZ description carries physically
+        # meaningful strength values that compare across tiles.
+        # Cycle period is averaged over each cluster and embedded.
         points = cluster_triggers(
-            result.trigger_potential,
+            result.leak,
             threshold_quantile=float(args.cluster_quantile),
             min_cluster_cells=int(args.min_cluster_cells),
+            cycle_period_s=result.cycle_period_s,
         )
         if not points:
             print(f"no trigger clusters survived; skipping {args.kmz}")

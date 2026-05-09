@@ -470,6 +470,7 @@ def plot_trigger_potential(
     ax: Axes | None = None,
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
     absorptivity: float = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
@@ -498,6 +499,7 @@ def plot_trigger_potential(
         wind_speed_ms=wind_speed_ms,
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
+        curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
         min_slope_deg=min_slope_deg,
         absorptivity=absorptivity,
         elevation_m=elevation_m,
@@ -541,6 +543,7 @@ def plot_weighted_convergence(
     ax: Axes | None = None,
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
     absorptivity: float = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
@@ -571,6 +574,7 @@ def plot_weighted_convergence(
         wind_speed_ms=wind_speed_ms,
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
+        curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
         min_slope_deg=min_slope_deg,
         absorptivity=absorptivity,
         elevation_m=elevation_m,
@@ -594,6 +598,203 @@ def plot_weighted_convergence(
         log=True,
         alpha=alpha,
         label="upstream W/m² × cells (log)",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
+def plot_leak(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    wind_from_deg: float,
+    wind_speed_ms: float,
+    ax: Axes | None = None,
+    wind_tilt_k: float = 0.03,
+    smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
+    min_slope_deg: float = 2.5,
+    slope_scale_deg: float = 15.0,
+    kappa_ref: float = 0.005,
+    q_ref: float = 1.0e6,
+    f_min: float = 0.15,
+    f_max: float = 1.0,
+    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    resolve_flats: bool = True,
+    cmap: str | Colormap = "magma",
+    alpha: float = 0.7,
+    log: bool = True,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Absolute trigger leak (W/m²) overlaid on a hillshade backdrop.
+
+    Runs the full Phase 3.1 pipeline via
+    :func:`thermal_model.physics.run_model` and overlays
+    ``RunResult.leak`` on the Lambertian hillshade. Bright cells mark
+    predicted ground-level trigger locations in *absolute* W/m² units
+    (the time-averaged release rate at each cell), in contrast to
+    :func:`plot_trigger_potential` which plots the rank-normalised
+    ``[0, 1]`` companion. Use this when cross-tile magnitude
+    comparison matters; rank-normalised display is fine when only
+    relative ranking within a single tile matters.
+
+    Defaults to a logarithmic colour scale (``log=True``) — real leak
+    fields span several decades and a linear scale would compress the
+    bulk into the colormap floor. Pass ``log=False`` for a linear
+    rendering on synthetic / uniform fixtures.
+    """
+    result = run_model(
+        dem,
+        cell_size_m,
+        when,
+        latitude_deg,
+        longitude_deg,
+        wind_from_deg=wind_from_deg,
+        wind_speed_ms=wind_speed_ms,
+        wind_tilt_k=wind_tilt_k,
+        smoothing_sigma_m=smoothing_sigma_m,
+        curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        min_slope_deg=min_slope_deg,
+        slope_scale_deg=slope_scale_deg,
+        kappa_ref=kappa_ref,
+        q_ref=q_ref,
+        f_min=f_min,
+        f_max=f_max,
+        absorptivity=absorptivity,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+        resolve_flats=resolve_flats,
+    )
+
+    if title is None:
+        title = (
+            f"Trigger leak (W/m²) — {when.isoformat(timespec='minutes')}\n"
+            f"wind from {wind_from_deg:.0f}° @ {wind_speed_ms:.1f} m/s, "
+            f"k={wind_tilt_k}"
+        )
+
+    return plot_overlay(
+        dem,
+        result.leak,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=log,
+        alpha=alpha,
+        label="leak (W/m²)" if not log else "leak (W/m², log)",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
+def plot_cycle_period(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    wind_from_deg: float,
+    wind_speed_ms: float,
+    ax: Axes | None = None,
+    wind_tilt_k: float = 0.03,
+    smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
+    min_slope_deg: float = 2.5,
+    slope_scale_deg: float = 15.0,
+    kappa_ref: float = 0.005,
+    q_ref: float = 1.0e6,
+    f_min: float = 0.15,
+    f_max: float = 1.0,
+    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    resolve_flats: bool = True,
+    cmap: str | Colormap = "plasma_r",
+    alpha: float = 0.75,
+    vmin_s: float = 60.0,
+    vmax_s: float = 3600.0,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Buoyancy-cycle period τ (seconds, log-scale) overlaid on a hillshade.
+
+    Runs the full Phase 3.1 pipeline via
+    :func:`thermal_model.physics.run_model` and overlays
+    ``RunResult.cycle_period_s`` on the Lambertian hillshade. Cells
+    where the leak is zero (no triggering) carry ``+inf`` in the
+    cycle raster; they are converted to ``NaN`` here so they render
+    transparent over the hillshade backdrop — distinct from cells
+    that *do* trigger but on a long cycle.
+
+    The colour scale is logarithmic and clipped to ``[vmin_s,
+    vmax_s]`` (default 60 s to 1 hr) so the pilot-relevant band
+    dominates the display. Defaults to ``plasma_r`` so light = short
+    cycle (reliable consistent thermals) and dark = long cycle
+    (sporadic mass-release dumps).
+    """
+    if vmin_s <= 0 or vmax_s <= vmin_s:
+        raise ValueError(
+            f"need 0 < vmin_s ({vmin_s}) < vmax_s ({vmax_s}) for log scale"
+        )
+
+    result = run_model(
+        dem,
+        cell_size_m,
+        when,
+        latitude_deg,
+        longitude_deg,
+        wind_from_deg=wind_from_deg,
+        wind_speed_ms=wind_speed_ms,
+        wind_tilt_k=wind_tilt_k,
+        smoothing_sigma_m=smoothing_sigma_m,
+        curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        min_slope_deg=min_slope_deg,
+        slope_scale_deg=slope_scale_deg,
+        kappa_ref=kappa_ref,
+        q_ref=q_ref,
+        f_min=f_min,
+        f_max=f_max,
+        absorptivity=absorptivity,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+        resolve_flats=resolve_flats,
+    )
+
+    # Mask non-leaking cells (cycle_period_s == +inf) so they render
+    # transparent. plot_overlay treats NaN as transparent.
+    cycle_for_plot = np.where(
+        np.isfinite(result.cycle_period_s), result.cycle_period_s, np.nan
+    )
+
+    if title is None:
+        title = (
+            f"Cycle period τ (s, log) — {when.isoformat(timespec='minutes')}\n"
+            f"wind from {wind_from_deg:.0f}° @ {wind_speed_ms:.1f} m/s, "
+            f"k={wind_tilt_k}"
+        )
+
+    return plot_overlay(
+        dem,
+        cycle_for_plot,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=True,
+        vmin=vmin_s,
+        vmax=vmax_s,
+        alpha=alpha,
+        label="cycle period τ (s, log)",
         title=title,
         contours=contours,
         contour_levels=contour_levels,

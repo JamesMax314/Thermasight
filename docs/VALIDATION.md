@@ -58,3 +58,135 @@ DEM") is taken to be sound enough to begin Phase 2. The formal
 three-tile gate (Pen-y-ghent / Ingleborough / Malham) should be
 revisited if Phase 2 or Phase 3 results suggest the convergence base
 layer is mismodelled.
+
+### 2026-05-09 — Mallerstang re-render under the Phase 3.1 leaky pipeline
+
+The same 15 km × 20 km mosaic re-rendered at 5 m through the
+Phase 3.1 leaky-bucket pipeline (`run_model` driving
+`leaky_weighted_accumulation`) under the canonical conditions
+matched to the Phase 3 baseline:
+
+* **Date/time**: 2026-07-15 13:00 BST (typical SW summer afternoon).
+* **Wind**: from 225° at 6 m/s.
+* **Smoothing**: 10 m Gaussian.
+* **Resolve flats**: on (Garbrecht-Martz between pit-fill and routing).
+* **Leak shape**: production defaults — `kappa_ref = 0.005 m⁻¹`,
+  `q_ref = 1×10⁶ J/m²`, `slope_min = 2.5°`, `slope_scale = 15°`,
+  `f_min = 0.15`, `f_max = 1.0`.
+
+Driven via `outputs/mallerstang_leaky_render.py`; the render
+completes in ~37 s on a Macbook (numba JIT backend; reading and
+resampling the 1 m source DEM accounts for ~6 s of that).
+Side-by-side visual comparison against the Phase 3 baseline lives
+at `outputs/mallerstang_phase3_vs_phase31.png`.
+
+**Energy conservation**: `Σ leak + residual_at_sinks ≡ Σ heating`
+to float precision. **98.7%** of injected heat consumed as triggers,
+**1.3%** escapes at sinks/edges. This is the core Phase 3.1 fix
+in numbers — the predecessor pipeline routed all upstream heat to
+the summit (the post-hoc `slope_mask` then suppressed its display
+but the underlying field was still inflated); the leaky kernel
+now consumes heat near where it sources, with only 1.3% reaching
+real-terrain summits.
+
+**Visual gate, item by item:**
+
+| Gate criterion | Phase 3 baseline | Phase 3.1 |
+|---|---|---|
+| SW flanks of Wild Boar Fell bright | ✓ | ✓ |
+| Mallerstang Edge cliff line lit | ✓ | ✓ (most prominent feature in `leak`) |
+| NE lee-side enhancement vs zero-wind | ✓ (per Phase 3 log) | trusted via kernel mirror-spur test |
+| Summit plateau dim | ✗ (heated by upstream catchment) | ✓ (Wild Boar Fell summit interior dark in `leak`) |
+| Cycle-period contrast cliff vs ridge | not modelled | ✓ — `cycle_period_s` short (~10²s) on scarp lips, longer (~10³s) on broader ridges, transparent on flats |
+
+The Phase 3.1 trigger raster (rank-normalised `leak`) reproduces the
+Phase 3 baseline character — same Mallerstang Edge dominance, same
+Wild Boar Fell summit-ring pattern, same SW-bright/NE-enhanced
+asymmetry. **Plus** the new pipeline removes the summit-plateau
+inheritance that motivated the reformulation: leak is bright on the
+**rim** of the Wild Boar Fell summit (where convex breaks live) but
+dark in the **interior** (the flat plateau). The cycle-period raster
+adds a new dimension of pilot-relevant information that the previous
+formulation could not express.
+
+**Output artefacts** (gitignored under `outputs/`):
+
+* `mallerstang_leaky_trigger_5m.png` — rank-normalised T panel.
+* `mallerstang_leaky_leak_5m.png` — absolute leak (W/m²).
+* `mallerstang_leaky_cycle_5m.png` — cycle period (s, log).
+* `mallerstang_leaky_compare_5m.png` — 4-panel overview
+  (DEM, T, leak, τ).
+* `mallerstang_phase3_vs_phase31.png` — Phase 3 baseline vs
+  Phase 3.1 side-by-side.
+
+**Caveat**: this is a single-area qualitative clearance, matched
+1:1 against the Phase 3 baseline. Production parameter defaults
+were not swept here — the synthetic-fixture defaults from the
+Stage 1 spike survived contact with real Mallerstang LIDAR
+without obvious failure, but a sensitivity sweep
+(`f_min`, `kappa_ref`, `q_ref`, `slope_scale`) and operator-led
+tuning against `docs/VALIDATION.md` ground-truth locations is the
+natural follow-up under Phase 4. **Stage 2 of Phase 3.1 is closed
+on this single-tile gate.** Revisit when Phase 4 (land cover +
+time-of-day) starts and the parameter sweep can fold in the
+land-cover absorptivity field.
+
+#### Addendum, 2026-05-09 — Stage 3 curvature pre-smooth fold-in
+
+The first real-LIDAR render under the Stage 2 pipeline (no-wind
+midday today: 2026-05-09 12:00 BST, 5 m, wind 0 m/s) produced a
+visible per-cell speckle on the leak raster — a spray of isolated
+bright cells uncorrelated with terrain. Diagnosis lives in
+`docs/model_correction.md` Stage 3 follow-up note: when Stage 2
+folded $\kappa^+$ into $f_{\text{drain}}$ and $q_{\text{storage}}$,
+the predecessor formulation's `MODEL.md` §6 ¶282–284
+LIDAR-speckle pre-smooth was unintentionally dropped, so single-cell
+$\kappa^+$ outliers were saturating
+$\mathrm{sat}(\kappa^+/\kappa_{\text{ref}})$ on isolated cells.
+
+Restored as a first-class `run_model` parameter
+`curvature_smoothing_sigma_m` (default 10 m). Sweep at
+σ ∈ {0, 5, 10, 20} m saved at
+`outputs/mallerstang_curvature_sigma_sweep_2026-05-09_1200.png`
+(no wind, midday today, 5 m, otherwise production defaults).
+Per-panel statistics:
+
+| σ_curv (m) | leak / heating | residual_at_sinks (W/m²·m²) | closure |
+|------------|----------------|------------------------------|---------|
+| 0          | 99.0 %         | 7.63 × 10⁷                   | 1.000000 |
+| 5          | 98.4 %         | 1.15 × 10⁸                   | 1.000000 |
+| 10 (default) | 97.7 %       | 1.66 × 10⁸                   | 1.000000 |
+| 20         | 96.4 %         | 2.68 × 10⁸                   | 1.000000 |
+
+Energy conservation is exact at every σ (the kernel is
+conservation-exact regardless of its inputs). The mild drift in
+leak/heating (99 % → 96 %) reflects more energy reaching genuine
+sinks (real-terrain summits and domain-boundary outlets) under
+smoother routing — physically expected, not a regression.
+
+Visual gate (no-wind midday, this addendum):
+
+* σ = 0: dense per-cell speckle covers most of the tile, obscuring
+  the underlying ridge/scarp pattern.
+* σ = 5: visible thinning; speckle still present.
+* σ = 10 (default): speckle gone; Mallerstang Edge cliff line
+  dominates, Wild Boar Fell summit-rim picked out as expected,
+  bowl SW of Wild Boar Fell visible. The leak field now correlates
+  with the underlying terrain morphology rather than per-cell LIDAR
+  noise.
+* σ = 20: over-smoothed; some real ridge detail starts to flatten
+  alongside the speckle.
+
+Refreshed canonical no-wind midday panels at the new default σ:
+
+* `outputs/mallerstang_leak_5m_nowind_2026-05-09_1200.png`
+* `outputs/mallerstang_cycle_5m_nowind_2026-05-09_1200.png`
+
+The canonical SW-summer-afternoon (225° @ 6 m/s, 2026-07-15 13:00
+BST) Phase 3.1 visual gate above is **not** re-rendered in this
+addendum — that gate is unrelated to the speckle issue (the wind
+tilt and lee enhancement are not affected by curvature noise) and
+the Stage 2 gate criteria (Mallerstang Edge dominant, Wild Boar
+Fell summit interior dim, NE lee enhancement) are independent of
+the new pre-smooth knob. A follow-up render under the new default
+is on the Phase 4 calibration sweep agenda.

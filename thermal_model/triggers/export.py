@@ -94,13 +94,26 @@ def write_kmz(
         # the centre of the cell that the centroid reports.
         x_proj, y_proj = transform * (point.col + 0.5, point.row + 0.5)
         lon, lat = transformer.transform(x_proj, y_proj)
+
+        description_lines = [
+            f"Mean trigger strength: {point.mean_strength:.3f}",
+            f"Cluster size: {point.n_cells} cells",
+        ]
+        if point.mean_cycle_period_s is not None:
+            tau = float(point.mean_cycle_period_s)
+            # Render compactly in the most pilot-readable unit.
+            if tau < 120.0:
+                tau_str = f"{tau:.0f} s"
+            elif tau < 3600.0:
+                tau_str = f"{tau / 60.0:.1f} min"
+            else:
+                tau_str = f"{tau / 3600.0:.1f} hr"
+            description_lines.append(f"Cycle period: {tau_str}")
+
         placemark = folder.newpoint(
             name=str(rank),
             coords=[(float(lon), float(lat))],
-            description=(
-                f"Mean trigger strength: {point.mean_strength:.3f}\n"
-                f"Cluster size: {point.n_cells} cells"
-            ),
+            description="\n".join(description_lines),
         )
         # Render rank-1 brightest; fade with rank.
         placemark.style.iconstyle.scale = 1.0
