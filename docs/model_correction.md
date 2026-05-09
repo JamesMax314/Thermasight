@@ -19,6 +19,23 @@
 > the rationale that fed into §11. The Mallerstang validation
 > re-render that gates the formal Phase 3.1 close is in
 > `docs/ROADMAP.md` § Phase 3.1.
+>
+> **Stage 3 follow-up landed 2026-05-09.** The first real-LIDAR
+> render with the Stage 2 pipeline produced visible per-cell
+> speckle on the leak raster: a spray of isolated bright cells
+> uncorrelated with terrain. Diagnosis: when Stage 2 folded
+> $\kappa^+$ into $f_{\text{drain}}$ and $q_{\text{storage}}$, the
+> §5 ¶282–284 prescription of `MODEL.md` ("a Gaussian pre-smooth
+> at one DEM cell suppresses LIDAR speckle in $\kappa_{\text{prof}}$")
+> was unintentionally dropped. Single-cell LIDAR $\kappa^+$
+> outliers were saturating $\mathrm{sat}(\kappa^+/\kappa_{\text{ref}})$
+> on isolated cells, pulling $f_{\text{drain}}$ to its $f_{\min}$
+> floor and producing the speckle. Fixed by adding
+> `curvature_smoothing_sigma_m` (default 10 m) on `run_model` — a
+> Gaussian-smoothed copy of the raw DEM feeds slope and curvature
+> *into the leaky shape functions only*; heating, cast shadow,
+> and the raw-DEM diagnostics on `RunResult` are unchanged. See
+> `docs/MODEL.md` §11.8 for the canonical description.
 
 ---
 

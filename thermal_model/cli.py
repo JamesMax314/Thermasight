@@ -184,6 +184,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preview.add_argument(
+        "--curvature-smoothing-sigma",
+        type=float,
+        default=10.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (metres) for the DEM smoothing applied before "
+            "curvature and slope are derived for the leaky shape functions. "
+            "Suppresses single-cell LIDAR speckle in κ⁺. Independent of "
+            "--smoothing-sigma (which only affects routing). Default 10 m. "
+            "Pass 0 to disable (raw curvature feeds the shape functions, "
+            "reproducing pre-2026-05-09 behaviour)."
+        ),
+    )
+    preview.add_argument(
         "--min-slope",
         type=float,
         default=2.5,
@@ -334,6 +348,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=10.0,
         metavar="METRES",
         help="Gaussian smoothing scale (m) before flow routing. Default 10.",
+    )
+    run.add_argument(
+        "--curvature-smoothing-sigma",
+        type=float,
+        default=10.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (m) for the DEM smoothing applied before curvature "
+            "and slope feed the leaky shape functions. Suppresses single-cell "
+            "LIDAR speckle in κ⁺. Independent of --smoothing-sigma. Default 10. "
+            "Pass 0 to reproduce pre-2026-05-09 behaviour."
+        ),
     )
     run.add_argument(
         "--min-slope",
@@ -510,6 +536,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
                 "wind_speed_ms": float(args.wind_speed),
                 "wind_tilt_k": float(args.wind_tilt_k),
                 "smoothing_sigma_m": float(args.smoothing_sigma),
+                "curvature_smoothing_sigma_m": float(args.curvature_smoothing_sigma),
                 "min_slope_deg": float(args.min_slope),
                 "resolve_flats": bool(args.resolve_flats),
             }
@@ -638,6 +665,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         wind_speed_ms=float(args.wind_speed),
         wind_tilt_k=float(args.wind_tilt_k),
         smoothing_sigma_m=float(args.smoothing_sigma),
+        curvature_smoothing_sigma_m=float(args.curvature_smoothing_sigma),
         min_slope_deg=float(args.min_slope),
         slope_scale_deg=float(args.slope_scale),
         kappa_ref=float(args.kappa_ref),

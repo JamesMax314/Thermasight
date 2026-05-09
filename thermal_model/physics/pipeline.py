@@ -25,9 +25,17 @@ Which DEM each step uses:
 
 * Gaussian smooth: raw DEM.
 * Wind tilt: smoothed DEM.
-* Slope, aspect, profile curvature: raw DEM
-  (real geometry drives shadows, gradients, and detachment via
-  ``f_drain`` and ``Q``).
+* Slope, aspect, profile curvature (for irradiance and the
+  RunResult diagnostics): raw DEM (real geometry drives shadows
+  and the per-cell DNI projection).
+* Slope and profile curvature (for the leaky shape functions
+  ``f_drain`` and ``q_storage``): a separately smoothed copy of
+  the raw DEM with σ = ``curvature_smoothing_sigma_m`` (default
+  10 m). Carries forward the ``MODEL.md`` §6 ¶282–284
+  prescription — single-cell LIDAR κ⁺ outliers would otherwise
+  saturate ``sat(κ⁺/κ_ref)`` and pull ``f_drain`` to its
+  ``f_min`` floor, producing a per-cell speckle on the leak
+  raster.
 * Cast-shadow mask: raw DEM.
 * Inversion + pit-fill + leaky weighted accumulation: smoothed +
   tilted DEM, with the heating field as the per-cell weight.
@@ -210,6 +218,7 @@ def run_model(
     wind_speed_ms: float,
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
     slope_scale_deg: float = 15.0,
     kappa_ref: float = 0.005,
@@ -254,6 +263,19 @@ def run_model(
         before wind tilt and flow routing. ``CLAUDE.md`` §2 gives the
         10–25 m envelope; 10 m is the lower bound and the project
         default. ``0`` disables smoothing.
+    curvature_smoothing_sigma_m : float, default 10.0
+        Gaussian smoothing scale in metres applied to the raw DEM
+        before slope and profile curvature are derived **for the
+        leaky shape functions** ``f_drain`` and ``q_storage``.
+        Independent of ``smoothing_sigma_m`` (which only affects the
+        routing path) and of the raw slope/aspect/curvature that
+        feed irradiance and the ``RunResult`` diagnostics. Suppresses
+        single-cell LIDAR speckle that would otherwise saturate
+        ``sat(κ⁺/κ_ref)`` on isolated cells and produce a per-cell
+        spray on the leak raster. Carries forward the ``MODEL.md``
+        §6 ¶282–284 prescription. ``0`` disables (raw curvature
+        feeds the shape functions, reproducing pre-2026-05-09
+        behaviour).
     min_slope_deg : float, default 2.5
         Slope (degrees) below which a cell contributes nothing to
         ``sharpness`` in the leaky shape function — i.e. ``f_drain``
@@ -348,6 +370,11 @@ def run_model(
         raise ValueError(
             f"smoothing_sigma_m must be non-negative, got {smoothing_sigma_m}"
         )
+    if curvature_smoothing_sigma_m < 0:
+        raise ValueError(
+            "curvature_smoothing_sigma_m must be non-negative, "
+            f"got {curvature_smoothing_sigma_m}"
+        )
     if pit_fill_epsilon < 0:
         raise ValueError(
             f"pit_fill_epsilon must be non-negative, got {pit_fill_epsilon}"
@@ -371,6 +398,21 @@ def run_model(
     slope_rad = slope(dem64, cell_size_m)
     aspect_rad = aspect(dem64, cell_size_m)
     kprof = profile_curvature(dem64, cell_size_m)
+
+    # Curvature/slope feeding the leaky shape functions are derived
+    # from a Gaussian-smoothed copy of the raw DEM (σ =
+    # curvature_smoothing_sigma_m). Suppresses single-cell LIDAR
+    # speckle that would otherwise saturate sat(κ⁺/κ_ref) on isolated
+    # cells. σ = 0 reproduces pre-2026-05-09 behaviour exactly.
+    if curvature_smoothing_sigma_m > 0:
+        dem_for_shape = _gaussian_smooth_nan(
+            dem64, curvature_smoothing_sigma_m / float(cell_size_m)
+        )
+        slope_for_shape_raw = slope(dem_for_shape, cell_size_m)
+        kprof_for_shape_raw = profile_curvature(dem_for_shape, cell_size_m)
+    else:
+        slope_for_shape_raw = slope_rad
+        kprof_for_shape_raw = kprof
 
     sun = solar_position(when, latitude_deg, longitude_deg, elevation_m=elevation_m)
     cs = clear_sky_irradiance(
@@ -413,8 +455,12 @@ def run_model(
     # handling we apply to ``heating`` before passing it as weights.
     min_slope_rad = math.radians(min_slope_deg)
     slope_scale_rad = math.radians(slope_scale_deg)
-    kprof_for_shape = np.where(np.isnan(kprof) & ~nan_mask, 0.0, kprof)
-    slope_for_shape = np.where(np.isnan(slope_rad) & ~nan_mask, 0.0, slope_rad)
+    kprof_for_shape = np.where(
+        np.isnan(kprof_for_shape_raw) & ~nan_mask, 0.0, kprof_for_shape_raw
+    )
+    slope_for_shape = np.where(
+        np.isnan(slope_for_shape_raw) & ~nan_mask, 0.0, slope_for_shape_raw
+    )
     f_drain = f_drain_field(
         kprof_for_shape,
         slope_for_shape,

@@ -281,7 +281,9 @@ $$
 
 A Gaussian pre-smooth at one DEM cell suppresses LIDAR speckle in
 $\kappa_{\text{prof}}$; this is independent of the σ ≈ 10–25 m
-smooth applied to the DEM before flow routing.
+smooth applied to the DEM before flow routing. The Phase 3.1
+production pipeline carries this prescription forward as the
+`curvature_smoothing_sigma_m` parameter on `run_model` — see §11.8.
 
 ---
 
@@ -634,10 +636,40 @@ and $Q$; the integration is intrinsic to the routing.
   per-cell weight on the routing.
 * The §6 profile-curvature definition is unchanged. $\kappa^+$ now
   feeds $f_{\text{drain}}$ and $Q$ instead of multiplying the
-  output, but it is computed from the raw DEM in the same way.
+  output. **It is now derived from a Gaussian-smoothed copy of the
+  raw DEM** with $\sigma$ = `curvature_smoothing_sigma_m` (default
+  10 m) — see §11.8. Heating, cast-shadow, and the `RunResult`
+  diagnostics still consume the raw-DEM curvature.
 * The §8 trigger clustering and KMZ export are unchanged in
   principle, just operating on `leak` instead of
   `trigger_potential`.
+
+### 11.8 Curvature pre-smooth (2026-05-09)
+
+The leaky shape functions $f_{\text{drain}}$ and $Q$ are sensitive
+to single-cell curvature outliers: a noisy LIDAR cell with
+$\kappa^+ \gg \kappa_{\text{ref}}$ saturates
+$\mathrm{sat}(\kappa^+/\kappa_{\text{ref}})$ and pulls $f_{\text{drain}}$
+to its $f_{\min}$ floor, producing a per-cell speckle on the leak
+raster that does not correspond to any real terrain feature. The §5–§7
+predecessor (lines 282–284 of this document) already specified a
+"one-DEM-cell Gaussian pre-smooth" of $\kappa_{\text{prof}}$ as a
+LIDAR-speckle suppressor; that step was unintentionally dropped when
+§11 folded $\kappa^+$ into the kernel inputs and is now restored as a
+first-class `run_model` parameter.
+
+In production, $\kappa^+$ and the slope feeding $f_{\text{drain}}$
+and $Q$ are derived from a Gaussian-smoothed copy of the raw DEM
+with $\sigma$ = `curvature_smoothing_sigma_m`, default 10 m (≈ 2 cells
+at the canonical 5 m Mallerstang grid). The routing DEM is *separately*
+smoothed with `smoothing_sigma_m` (also default 10 m); the two knobs
+are independent. Heating, cast shadow, and the raw-DEM curvature
+exposed on `RunResult.profile_curvature` and `RunResult.slope_rad`
+are unaffected — the principle that real geometry drives shadows and
+the per-cell DNI projection is preserved.
+
+Pass `curvature_smoothing_sigma_m=0` to reproduce pre-2026-05-09
+behaviour exactly (raw $\kappa^+$ feeds the kernel).
 
 ### 11.7 Validation regime
 

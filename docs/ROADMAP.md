@@ -20,6 +20,11 @@ now drives the leaky kernel; energy conservation is pinned at the
 pipeline level (98.7 % of injected heat consumed as triggers on
 the Mallerstang mosaic, 1.3 % residual at sinks). See
 `docs/VALIDATION.md` § 2026-05-09 for the Mallerstang clearance.
+Stage 3 (curvature pre-smooth fold-in, 2026-05-09 follow-up)
+restores the predecessor's `MODEL.md` §6 ¶282–284 LIDAR-speckle
+suppressor as the new `curvature_smoothing_sigma_m` parameter on
+`run_model` (default 10 m), fixing per-cell speckle visible on the
+no-wind midday Mallerstang leak panel.
 
 Update this header when a phase or stage completes. Do not skip
 phases. Do not start the next phase until its predecessor's gate
@@ -550,6 +555,54 @@ reproduces the Phase 3 visual gate **plus** dimming of the
 summit-plateau artefacts that motivated the reformulation, with
 plausible cycle-period contrast between the cliff lines (short)
 and the rounded ridges (long).
+
+### Stage 3 — curvature pre-smooth fold-in (2026-05-09 follow-up)
+
+Operator inspection of the no-wind midday Mallerstang leak / cycle
+panels (`outputs/mallerstang_leak_5m_nowind_2026-05-09_1200.png`,
+`mallerstang_cycle_5m_nowind_2026-05-09_1200.png`) showed a
+per-cell speckle uncorrelated with terrain features — a spray of
+isolated bright cells. Diagnosis: when Stage 2 folded $\kappa^+$
+into $f_{\text{drain}}$ / $q_{\text{storage}}$, the predecessor
+formulation's `MODEL.md` §6 ¶282–284 prescription
+("a Gaussian pre-smooth at one DEM cell suppresses LIDAR speckle
+in $\kappa_{\text{prof}}$") was unintentionally dropped. Production
+`run_model` was deriving curvature/slope for the leaky shape
+functions from the raw DEM, so single-cell LIDAR κ⁺ outliers
+saturated $\mathrm{sat}(\kappa^+/\kappa_{\text{ref}})$ and pulled
+$f_{\text{drain}}$ to its $f_{\min}$ floor on isolated cells.
+
+- [x] `physics/pipeline.py:run_model` — added
+  `curvature_smoothing_sigma_m` (default 10 m). When σ > 0, a
+  Gaussian-smoothed copy of the raw DEM (NaN-aware, reusing the
+  existing `_gaussian_smooth_nan` helper) feeds slope and profile
+  curvature into the leaky shape functions. The raw-DEM slope,
+  aspect, and curvature feeding irradiance and the `RunResult`
+  diagnostic fields are unchanged. Cast shadow and heating still
+  use the raw DEM. σ = 0 reproduces pre-2026-05-09 behaviour
+  exactly.
+- [x] `cli.py` — `--curvature-smoothing-sigma` flag on both `run`
+  and `preview` subcommands. Default 10 m. Plumbed through
+  `_cmd_run`, `_cmd_preview`, and the four `viz` plotters that
+  call `run_model` (`plot_trigger_potential`,
+  `plot_weighted_convergence`, `plot_leak`, `plot_cycle_period`).
+- [x] `tests/test_physics_pipeline.py` — three new tests covering
+  spatial-roughness drop on a noisy-ramp fixture (≥ 2× reduction),
+  σ=0 reproducing pre-fix behaviour (regression guard against
+  unintended branch interactions), and energy conservation
+  preserved at σ=20 m on the mirror-spur fixture.
+- [x] `MODEL.md` §11.8, §6, §11.6 — documented the pre-smooth as a
+  carry-forward of the §6 prescription with the
+  predecessor-vs-production wording.
+- [x] Mallerstang re-render at no-wind midday today + canonical
+  SW-afternoon: see `docs/VALIDATION.md` § 2026-05-09 addendum.
+
+**Stage 3 gate**: speckle gone from the no-wind midday Mallerstang
+leak panel; canonical SW-afternoon visual gate from Stage 2 still
+holds; energy closure preserved (98.7 % leak / 1.3 % residual on the
+canonical SW render); test suite green (294 passed; 1 pre-existing
+hypothesis-property failure in `test_aspect_rotates_under_rot90`
+unrelated to this change).
 
 ## Phase 4 — Land cover + time-of-day
 
