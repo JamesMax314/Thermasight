@@ -11,10 +11,12 @@ under ``thermal_model.solar``; the two are intentionally distinct.
 """
 
 from thermal_model.viz.diagnostics import (
+    plot_absorptivity,
     plot_aspect,
     plot_convergence,
     plot_cycle_period,
     plot_heating,
+    plot_land_cover,
     plot_leak,
     plot_overlay,
     plot_profile_curvature,
@@ -26,10 +28,12 @@ from thermal_model.viz.hillshade import hillshade
 
 __all__ = [
     "hillshade",
+    "plot_absorptivity",
     "plot_aspect",
     "plot_convergence",
     "plot_cycle_period",
     "plot_heating",
+    "plot_land_cover",
     "plot_leak",
     "plot_overlay",
     "plot_profile_curvature",

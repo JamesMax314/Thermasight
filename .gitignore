@@ -42,6 +42,7 @@ htmlcov/
 # Project data — never commit raw or processed LIDAR
 data/raw/
 data/processed/
+data/cache/
 outputs/
 
 # Notebooks: only commit templates/

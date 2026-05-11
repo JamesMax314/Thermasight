@@ -565,3 +565,36 @@ def test_run_model_invalid_inputs() -> None:
             wind_speed_ms=0.0,
             curvature_smoothing_sigma_m=-1.0,
         )
+
+
+def test_uniform_array_alpha_matches_scalar_alpha_cell_for_cell() -> None:
+    """A uniform α-array must give cell-for-cell identical output to scalar α.
+
+    This is the strongest Phase 4 gate. If broadcasting, NaN-substitution,
+    or the heating-→-weight path treats the array differently from the
+    scalar of the same value, this test catches it. The mirror-spur tests
+    above verify the *physics* path; this one verifies that the array
+    plumbing introduced by ``--land-cover`` doesn't perturb that path.
+    """
+    dem = _mirror_spur_dem(rows=81, cols=81)
+    alpha_value = 0.65
+    alpha_array = np.full(dem.shape, alpha_value, dtype=np.float64)
+
+    kwargs = dict(
+        cell_size_m=CELL_SIZE_M,
+        when=NOON_MIDSUMMER,
+        latitude_deg=LAT_DEG,
+        longitude_deg=LON_DEG,
+        wind_from_deg=225.0,
+        wind_speed_ms=4.0,
+        resolve_flats=False,
+    )
+    scalar = run_model(dem, absorptivity=alpha_value, **kwargs)
+    array = run_model(dem, absorptivity=alpha_array, **kwargs)
+
+    np.testing.assert_array_equal(scalar.leak, array.leak)
+    np.testing.assert_array_equal(scalar.trigger_potential, array.trigger_potential)
+    np.testing.assert_array_equal(scalar.heating_wm2, array.heating_wm2)
+    assert scalar.residual_at_sinks_total == pytest.approx(
+        array.residual_at_sinks_total
+    )

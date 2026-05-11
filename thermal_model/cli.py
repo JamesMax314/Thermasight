@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
+    import numpy as np
+
     from thermal_model.io.dem import DEM
 
 _PREVIEW_CHOICES = (
@@ -135,14 +137,47 @@ def build_parser() -> argparse.ArgumentParser:
         default=3.0,
         help="Linke turbidity for the Ineichen-Perez clear-sky model (default 3.0).",
     )
-    preview.add_argument(
+    preview_absorp = preview.add_mutually_exclusive_group()
+    preview_absorp.add_argument(
         "--absorptivity",
         type=float,
         default=None,
         help=(
             "Shortwave absorptivity alpha = 1 - albedo. Defaults to the "
-            "upland Dales value from docs/DATA.md (0.80)."
+            "upland Dales value from docs/DATA.md (0.80). Mutually "
+            "exclusive with --land-cover and --land-cover-wms."
         ),
+    )
+    preview_absorp.add_argument(
+        "--land-cover",
+        type=Path,
+        default=None,
+        metavar="LCM_TIF",
+        help=(
+            "Local UKCEH LCM GeoTIFF for per-cell absorptivity. "
+            "Reprojected to the DEM grid via nearest-neighbour resampling; "
+            "unknown classes fall back to DEFAULT_ABSORPTIVITY (0.80) "
+            "until the operator authors UKCEH_LCM_ABSORPTIVITY."
+        ),
+    )
+    preview_absorp.add_argument(
+        "--land-cover-wms",
+        action="store_true",
+        help=(
+            "Auto-fetch UKCEH LCM 2024 (10 m) from the public WMS for "
+            "the DEM bounds. Cached under data/cache/lcm/."
+        ),
+    )
+    preview.add_argument(
+        "--lcm-layer",
+        type=str,
+        default="LC.10m.GB",
+        help="WMS layer name (default LC.10m.GB; LC.10m.NI for NI).",
+    )
+    preview.add_argument(
+        "--no-lcm-cache",
+        action="store_true",
+        help="Bypass the LCM WMS cache (always re-fetch).",
     )
     preview.add_argument(
         "--wind-from",
@@ -410,11 +445,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Maximum drain fraction (default 1.0).",
     )
-    run.add_argument(
+    run_absorp = run.add_mutually_exclusive_group()
+    run_absorp.add_argument(
         "--absorptivity",
         type=float,
         default=None,
-        help="Shortwave absorptivity alpha. Default 0.80 (upland Dales).",
+        help=(
+            "Shortwave absorptivity alpha. Default 0.80 (upland Dales). "
+            "Mutually exclusive with --land-cover and --land-cover-wms."
+        ),
+    )
+    run_absorp.add_argument(
+        "--land-cover",
+        type=Path,
+        default=None,
+        metavar="LCM_TIF",
+        help=(
+            "Local UKCEH LCM GeoTIFF for per-cell absorptivity. "
+            "Reprojected to the DEM grid via nearest-neighbour resampling; "
+            "unknown classes fall back to DEFAULT_ABSORPTIVITY (0.80)."
+        ),
+    )
+    run_absorp.add_argument(
+        "--land-cover-wms",
+        action="store_true",
+        help=(
+            "Auto-fetch UKCEH LCM 2024 (10 m) from the public WMS for the "
+            "DEM bounds. Cached under data/cache/lcm/."
+        ),
+    )
+    run.add_argument(
+        "--lcm-layer",
+        type=str,
+        default="LC.10m.GB",
+        help="WMS layer name (default LC.10m.GB; LC.10m.NI for NI).",
+    )
+    run.add_argument(
+        "--no-lcm-cache",
+        action="store_true",
+        help="Bypass the LCM WMS cache (always re-fetch).",
     )
     run.add_argument(
         "--linke-turbidity",
@@ -588,6 +657,12 @@ def _resolve_heating_args(
     """Validate and fill in heating-specific args from the DEM context.
 
     Returns ``(when, latitude_deg, longitude_deg, kwargs_for_plot_heating)``.
+    The ``"absorptivity"`` entry in the kwargs dict is ``float`` when the
+    operator passed ``--absorptivity`` (or fell through to the default
+    scalar) and a ``np.ndarray`` when they passed ``--land-cover`` or
+    ``--land-cover-wms``. ``run_model`` and ``plot_heating`` accept
+    either.
+
     Raises ``SystemExit`` on missing inputs we can't reasonably default.
     """
     from datetime import datetime as _datetime
@@ -627,11 +702,31 @@ def _resolve_heating_args(
         if lon is None:
             lon = float(centre_lon)
 
+    alpha: float | np.ndarray
+    land_cover_path = getattr(args, "land_cover", None)
+    land_cover_wms = bool(getattr(args, "land_cover_wms", False))
+    if land_cover_path is not None:
+        from thermal_model.io import absorptivity_from_land_cover, read_land_cover
+
+        lcm = read_land_cover(land_cover_path)
+        alpha = absorptivity_from_land_cover(lcm, dem)
+    elif land_cover_wms:
+        from thermal_model.io import absorptivity_from_land_cover, fetch_lcm_for_dem
+
+        lcm = fetch_lcm_for_dem(
+            dem,
+            layer=getattr(args, "lcm_layer", "LC.10m.GB"),
+            use_cache=not bool(getattr(args, "no_lcm_cache", False)),
+        )
+        alpha = absorptivity_from_land_cover(lcm, dem)
+    else:
+        alpha = float(
+            args.absorptivity if args.absorptivity is not None else DEFAULT_ABSORPTIVITY
+        )
+
     kwargs: dict[str, object] = {
         "linke_turbidity": float(args.linke_turbidity),
-        "absorptivity": float(
-            args.absorptivity if args.absorptivity is not None else DEFAULT_ABSORPTIVITY
-        ),
+        "absorptivity": alpha,
     }
     if args.elevation is not None:
         kwargs["elevation_m"] = float(args.elevation)
