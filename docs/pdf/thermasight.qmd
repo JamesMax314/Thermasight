@@ -1,0 +1,506 @@
+---
+title: "The Thermasight Model"
+subtitle: "Predicting paragliding thermal triggers from LIDAR"
+author: "James Maxwell"
+date: today
+date-format: "D MMMM YYYY"
+format:
+  pdf:
+    documentclass: scrartcl
+    papersize: a4
+    fontsize: 11pt
+    geometry:
+      - margin=2.4cm
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    colorlinks: true
+    fig-pos: "htbp"
+    fig-cap-location: bottom
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{microtype}
+        \usepackage{booktabs}
+header-includes:
+  - \renewcommand{\arraystretch}{1.15}
+---
+
+# What this model predicts {#sec-what}
+
+Thermasight predicts **where on the ground a thermal will source and
+trigger** — not where it will be once it is airborne. The output is a
+raster (and a clustered point list) flagging the cells from which
+buoyant air detaches from terrain and begins its climb.
+
+Three physical conditions must hold *simultaneously* at a single
+ground cell for it to be a trigger:
+
+1. **Warm surface air has pooled there.** Boundary-layer air, heated
+   by the terrain below, has been guided by topography to converge at
+   this cell. Without a supply of warm air there is nothing to
+   trigger.
+2. **The cell has received enough solar energy.** Convergence alone
+   is not sufficient. Two geometrically equivalent spurs facing
+   different aspects have very different thermal strength depending
+   on sun angle and time of day.
+3. **The terrain is convex enough to cause detachment.** Rising warm
+   air clings to a slope until the slope curves away beneath it. At
+   a convex break — a cliff lip, a spur shoulder, a sudden
+   steepening — the air can no longer follow the surface and
+   detaches as a thermal bubble.
+
+The model layers these three signals into a single trigger raster.
+The rest of this document walks through each layer and shows what
+it produces for the **Ullswater 10 km × 15 km** validation render
+(NW wind at 10 km/h, 13:00 BST on 2026-05-10).
+
+\newpage
+
+# The hydrological analogy {#sec-hydro}
+
+The engine rests on one analogy: **rising air on real terrain
+follows the same gradient logic as falling water on inverted
+terrain.** Given a digital elevation model $z(x, y)$ define the
+inverted surface
+
+$$
+\tilde z(x, y) = \max(z) - z(x, y).
+$$ {#eq-invert}
+
+Standard hydrological flow accumulation applied to $\tilde z$
+gives the **thermal convergence** field. Convex features on the
+real terrain (spurs, cliff lips, shoulders) become concave on
+$\tilde z$, so flow pools there — which is exactly where rising
+warm boundary-layer air is predicted to converge.
+
+In production the inversion is applied to a *Gaussian-smoothed,
+wind-tilted* DEM (see @sec-wind). The smoothing kills sub-thermal
+noise; the tilt biases the resulting convergence toward the lee
+side of features, which is where surface warm air actually pools.
+
+We use D∞ flow accumulation (Tarboton, 1997) via `richdem`. D8 is
+too quantised for ridge-and-spur geometry; D∞ resolves the eight
+sub-facets of every 3×3 stencil and partitions flow between two
+downhill receivers in proportion to the geometry.
+
+![The Ullswater DEM. Lake Ullswater (the centre-left dark band) is
+flanked by the High Street range to the east and the Helvellyn /
+Place Fell terrain to the west. Total relief ≈ 800 m.](figures/ullswater_compare_5m.png){#fig-dem width=100%}
+
+\newpage
+
+# Wind as terrain tilt {#sec-wind}
+
+Wind in the surface boundary layer sweeps warm air downwind. Warm
+air accumulates on the lee side of ridges and spurs and is
+continually displaced from windward faces. The model captures this
+by adding a linear ramp to the smoothed DEM *before inversion*:
+
+$$
+z_{\text{tilted}}(x, y) = z_{\text{smoothed}}(x, y)
+  + k \, |\mathbf{u}| \bigl( x \sin\theta - y \cos\theta \bigr)
+$$ {#eq-tilt}
+
+where $\theta$ is the **wind-to** bearing in radians,
+$|\mathbf{u}|$ is wind speed in m/s, and $k$ is an empirical
+coefficient (default $0.03$ s/m). The ramp is highest in the
+wind-to direction; after inversion that becomes the lowest part of
+the inverted surface, so flow accumulates preferentially on the
+lee side of every feature.
+
+## Sign convention
+
+| Wind from | Wind to    | Ramp peaks toward | Convergence biased toward |
+|-----------|------------|-------------------|----------------------------|
+| N (0°)    | S (180°)   | south             | south                      |
+| S (180°)  | N (0°)     | north             | north                      |
+| W (270°)  | E (90°)    | east              | east                       |
+| SW (225°) | NE (45°)   | northeast         | northeast                  |
+
+If the bias goes the wrong way, the ramp's sign is wrong. The
+Ullswater render uses NW wind (from 315°, flowing toward SE / 135°),
+so convergence biases toward the SE flanks of every ridge.
+
+## What the tilt does *not* do
+
+* It does not advect thermals after detachment — that is a separate,
+  out-of-scope problem.
+* It does not model rotors, lee-wave uplift, or wind shear.
+* It does not capture valley-wind / synoptic-wind convergence
+  lines.
+
+These are documented limitations (see @sec-limits), not bugs.
+
+\newpage
+
+# Solar heating and land cover {#sec-heating}
+
+Each cell injects buoyant energy into the air column above it at a
+per-cell rate
+
+$$
+H(x, y, t) = \alpha(x, y) \bigl( s(x, y, t) \, I_{\text{beam}}(x, y, t)
+                                  + I_{\text{diffuse}}(x, y, t) \bigr)
+$$ {#eq-heating}
+
+in W/m², where
+
+* $I_{\text{beam}}$ and $I_{\text{diffuse}}$ are slope-projected
+  direct and isotropic-diffuse clear-sky irradiance from `pvlib`
+  (Ineichen-Perez model, Linke turbidity 3.0).
+* $\alpha$ is surface absorptivity ($1 - \mathrm{albedo}$), either a
+  scalar or a per-cell array driven by the UKCEH Land Cover Map.
+* $s \in \{0, 1\}$ is a cast-shadow mask from a horizon scan along
+  the solar azimuth. It multiplies only the beam term; diffuse
+  irradiance comes from the whole sky and is not blocked by a
+  single upwind ridge.
+
+Slope and aspect are computed from the **raw** DEM via Horn (1981);
+profile curvature uses Zevenbergen & Thorne (1987) on the same 3×3
+stencil. Real geometry drives shadows and gradients — the heating
+field never sees the smoothed or wind-tilted DEM.
+
+@fig-alpha shows the Ullswater absorptivity field. Lake Ullswater
+(α ≈ 0.05, near-total reflection plus evaporative loss) injects
+effectively no heating, so the routing skips it entirely; this is a
+load-bearing test case for the land-cover plumbing. Rugged
+heather/grass uplands sit at α ≈ 0.75–0.85.
+
+![Per-cell absorptivity α derived from the UKCEH Land Cover Map
+2024 for the Ullswater tile. Lake water (deep navy) sits at
+α ≈ 0.05; upland grass and heather sit at α ≈ 0.75–0.85.](figures/ullswater_alpha_5m.png){#fig-alpha width=85%}
+
+\newpage
+
+# The leaky-bucket kernel {#sec-leak}
+
+The classical formulation routed heating as a weight on D∞ flow
+accumulation and multiplied the result by positive curvature and a
+slope mask. That has two physical defects: it double-counts energy
+along the flow path (every cell sees the full upstream catchment in
+its own accumulation value), and it has no mechanism for the
+*cyclic-dump* regime that pilots observe on gentle terrain. The
+production model replaces that step with a **leaky-bucket weighted
+accumulation**.
+
+Each cell $c$ has a steady-state through-flow rate $r(c)$ in
+W/m²: the sum of its self-injection $H(c)$ and all upstream
+contributions delivered along the inverted-and-tilted gradient.
+The kernel routes $r(c)$ the same way as classical D∞ but at every
+cell it splits the through-flow into a leak-out and a forward-on:
+
+$$
+\begin{aligned}
+\mathrm{leak}(c)     &= \bigl(1 - f_{\text{drain}}(c)\bigr) \, r(c) \\
+\mathrm{forward}(c) &= f_{\text{drain}}(c) \, r(c)
+\end{aligned}
+$$ {#eq-leak-split}
+
+Only $\mathrm{forward}(c)$ is dispatched to the two D∞ receivers;
+$\mathrm{leak}(c)$ is consumed locally as **trigger output**.
+
+## Drain fraction
+
+The drain fraction depends on local geometry:
+
+$$
+f_{\text{drain}}(\kappa^+, \mathrm{slope}) = f_{\max}
+  - (f_{\max} - f_{\min})
+    \,\mathrm{sat}\!\left(\frac{\kappa^+}{\kappa_{\text{ref}}}\right)
+    \,\mathrm{sat}\!\left(\frac{\mathrm{slope} - \theta_{\min}}{\theta_{\text{scale}}}\right)
+$$ {#eq-fdrain}
+
+with $\mathrm{sat}(x) = 1 - e^{-\max(x, 0)}$, the smooth
+non-negative saturation. A sharp convex break with substantial
+slope saturates both terms, driving $f_{\text{drain}}$ toward
+$f_{\min}$ — the cell consumes most of its through-flow as trigger
+output. A flat plateau leaves $f_{\text{drain}} = f_{\max} = 1$,
+forwarding everything onward with nothing leaked.
+
+Production defaults: $f_{\min} = 0.15$ (~15% slips past even the
+sharpest break as boundary-layer skim), $f_{\max} = 1.0$,
+$\kappa_{\text{ref}} = 0.005\ \mathrm{m^{-1}}$,
+$\theta_{\min} = 2.5°$, $\theta_{\text{scale}} = 15°$.
+
+## Energy conservation
+
+Across the finite domain the kernel preserves total injected energy
+exactly:
+
+$$
+\sum_c \mathrm{leak}(c) + \mathrm{residual\_at\_sinks} = \sum_c H(c)
+$$ {#eq-conservation}
+
+within float-precision rounding. This is the single tightest
+correctness check on the topological pass. The Ullswater render
+closes at 98.3 % leak / 1.7 % residual on a total of 3.32 × 10⁹ W.
+
+![Absolute leak field on Ullswater. Bright cells are the high-rate
+trigger sources; flat terrain and the lake stay dark. The
+Mallerstang Edge–style scarp lines along the High Street range
+(east of the lake) dominate, with the bowls and spur shoulders
+filling in at lower intensity.](figures/ullswater_leak_5m.png){#fig-leak width=85%}
+
+\newpage
+
+# Cycle period {#sec-cycle}
+
+The leaky kernel exposes a second per-cell field that the
+predecessor formulation could not express. Each cell has a
+buoyancy-storage capacity in J/m²:
+
+$$
+Q(\kappa^+, \mathrm{slope}) = Q_{\text{ref}} \,
+  \exp\!\left(-\frac{\max(\kappa^+, 0)}{\kappa_{\text{ref}}}\right) \,
+  \exp\!\left(-\frac{\max(\mathrm{slope} - \theta_{\min}, 0)}{\theta_{\text{scale}}}\right)
+$$ {#eq-qstorage}
+
+Storage is **large on flat / gentle terrain** (the boundary layer
+can grow tall before the buoyancy cap is overcome) and **small on
+sharp / steep terrain** (the geometry forces release at low
+buildup). The cycle period at each cell is
+
+$$
+\tau(c) = \frac{Q(c)}{\mathrm{leak}(c)}, \qquad
++\infty \text{ where } \mathrm{leak}(c) = 0.
+$$ {#eq-tau}
+
+Interpretation: $r(c)$ is the time-averaged rate at which warm air
+arrives at $c$; $\mathrm{leak}(c)$ is the time-averaged rate at
+which the trigger releases energy; $\tau(c)$ is the period
+between successive release events. A scarp lip with sharp
+$\kappa^+$ has small $Q$ and large $\mathrm{leak}$, giving short
+$\tau$ — the **consistent-trigger regime**. A gentle ridge has
+large $Q$ and small $\mathrm{leak}$, giving long $\tau$ — the
+**cyclic-dump regime**.
+
+Both produce thermals, but the cycle period distinguishes
+"reliable, frequent, small parcels" from "sporadic, big dumps",
+which is pilot-actionable information.
+
+![Buoyancy cycle period τ on Ullswater (log scale). Lighter cells
+cycle quickly (~1 minute, scarp lips, the consistent-trigger
+regime); darker cells cycle slowly (~10 minutes, gentle ridges
+and broad spurs, the cyclic-dump regime). Transparent cells have
+zero leak — the routing predicts no trigger
+there.](figures/ullswater_cycle_5m.png){#fig-cycle width=85%}
+
+\newpage
+
+# Drafting / aggregation {#sec-draft}
+
+Rising buoyant plumes coalesce as they ascend; a pilot at trigger
+height (100–300 m AGL) samples a ground footprint several
+thermal-column radii across. A diffuse spur leaking 1 W/m² over
+$200 \times 200$ m injects the same total power as a scarp lip
+leaking 400 W/m² over $10 \times 10$ m — and the spur's parcel is
+typically the smoother climb.
+
+A naïve "rank-normalise the cell-level leak and threshold at the
+95th percentile" pipeline misses this: the spur's cells each sit at
+a moderate rank and rarely clear the cut, while the scarp lip's
+cells dominate. We therefore aggregate `leak` at a thermal-merging
+scale before forming the trigger raster:
+
+$$
+\widetilde{\mathrm{leak}}(\mathbf{x})
+  = G_{\sigma_{\text{draft}}} \star \mathrm{leak}(\mathbf{x})
+  \cdot \mathbb{1}\!\bigl[\,\mathrm{slope}(\mathbf{x}) > \theta_{\min}\,\bigr]
+$$ {#eq-draft}
+
+where $G_{\sigma}$ is a NaN-aware Gaussian smoother with
+$\sigma_{\text{draft}} = 75\ \mathrm{m}$ (roughly one thermal
+column radius at low trigger altitude on UK upland terrain). The
+slope mask is reapplied *after* the Gaussian so that bleed onto
+flat plateaus does not reintroduce summit-interior brightness.
+
+The Gaussian itself is sum-preserving on interior cells, so the
+energy-conservation invariant of @eq-conservation on the underlying
+$\mathrm{leak}$ field is untouched. The energy thrown away by the
+post-smooth slope mask is logged as the scalar
+`draft_mask_loss_total`; for Ullswater it was 2.63 % of total leak,
+well within the budget.
+
+![Aggregated draft potential on Ullswater. Compare against
+@fig-leak: scarp lines are still visible but blurred; broad spur
+shoulders and slope faces now show as coherent zones of moderate
+intensity, where in the raw leak they appeared as faint
+patches.](figures/ullswater_draft_5m.png){#fig-draft width=85%}
+
+## The display raster — a rank-blend
+
+A naïve $\mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})$
+display over-suppresses the cell-level scarp peaks that the
+predecessor showed correctly: Gaussian aggregation dilutes a
+concentrated peak by a factor of ~200 (at $\sigma_{\text{draft}}
+= 75$ m on a 5 m grid) while leaving broad peaks roughly
+untouched. The production trigger raster is therefore the per-cell
+maximum of two independently rank-normalised fields:
+
+$$
+T(\mathbf{x}) = \max\!\bigl(
+    \mathrm{rank\_normalise}(\mathrm{leak})(\mathbf{x}),\;
+    \mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})(\mathbf{x})
+  \bigr).
+$$ {#eq-trigger}
+
+Ranking each field within its own positive-cell population puts
+cells on equal footing: a scarp lip in the top 1 % of `leak` and a
+spur shoulder in the top 1 % of `draft_potential` both land near
+1.0, regardless of absolute W/m². The per-cell $\max$ then asks
+"in which regime is this cell most extreme?" — preserving the
+spur-rescue effect of drafting while keeping scarp visibility.
+
+![Soaring view: trigger raster T with a $q_{0.80}$ floor over
+hillshade. Cells below the floor render transparent so the terrain
+reads through; the magma scale spans the top 20 % of trigger
+cells. This is the panel that was compared against real flight
+tracks on 2026-05-11.](figures/ullswater_trigger_5m.png){#fig-trigger width=85%}
+
+\newpage
+
+# End-to-end on Ullswater {#sec-overview}
+
+@fig-overview is the six-panel anchor figure. Top row: input DEM,
+the absorptivity field driving heating, and the soaring-view
+trigger raster. Bottom row: the kernel's absolute leak output, the
+post-aggregation draft potential, and the cycle-period raster.
+
+![Ullswater six-panel overview. The figure suptitle includes the
+canonical render parameters (date/time, wind, smoothing scales,
+conservation closure, cluster count).](figures/ullswater_compare_5m.png){#fig-overview width=100%}
+
+## Closure statistics
+
+| Metric                    | Value             |
+|---------------------------|-------------------|
+| $\sum H$                  | $3.32 \times 10^9$ W |
+| $\sum \mathrm{leak} / \sum H$ | 98.3 %        |
+| Residual at sinks         | $5.49 \times 10^7$ W |
+| Draft mask loss           | 2.63 % of leak    |
+| Clusters at $q_{0.95}$    | 178               |
+| Median cluster $\bar\tau$  | 62 s (consistent-trigger regime) |
+| Pipeline runtime          | 23.6 s (3000 × 2000 cells, 5 m grid) |
+
+The median cluster cycle of 62 s indicates a scarp-dominated trigger
+field — exactly what you would expect over the Lake District's
+glaciated valleys. Mallerstang's flatter limestone uplands give a
+longer median (102 s on the analogous render); the contrast is a
+real pilot-relevant signal that the cycle-period field surfaces.
+
+\newpage
+
+# First flight-log-backed validation {#sec-validation}
+
+The Ullswater render was the **first real-flight validation** of the
+production pipeline. The operator flew Ullswater on 2026-05-10 at
+13:00 BST and compared the predicted trigger raster against the
+climbs found on the day. A second pilot flew the same valley on the
+same day.
+
+## Flight one — operator
+
+The operator flew SE across Ullswater toward the High Street range
+and found climbs once away from the lake. The predicted top-8
+clusters all sit east of Ullswater on the High Street massif and
+adjacent fells:
+
+| Rank | Mean strength (W/m²) | BNG E / N           | Feature                       |
+|-----:|---------------------:|---------------------|-------------------------------|
+| 1    | 3285                 | 343 394 / 522 320   | High Street / Loadpot Hill area |
+| 2    | 2923                 | 337 100 / 522 718   | Bonscale Pike / Wether Hill   |
+| 3    | 2895                 | 335 130 / 521 180   | Hartsop / Boredale Hause      |
+| 4    | 2697                 | 335 302 / 522 873   | Head of Boredale              |
+| 5    | 2601                 | 340 547 / 522 434   | Loadpot east face             |
+| 6    | 2599                 | 340 097 / 523 500   | High Raise area               |
+| 7    | 2346                 | 342 077 / 522 700   | Loadpot east face             |
+| 8    | 2275                 | 338 510 / 523 266   | Heughscar / Askham Fell       |
+
+Climbs encountered along the SE crossing toward High Street matched
+the brightest cluster band in the predicted trigger raster.
+
+## Flight two — one match, one out-of-scope miss
+
+The second pilot flew east over the lake islands and **scratched
+above W-facing slopes**, then eventually dropped into Boredale and
+found a climb on the **southern back wall** — a feature the model
+**did not predict**.
+
+* The W-facing scratch is consistent with the model: W-facing
+  slopes are *windward* under NW wind, so the wind-tilt mechanism
+  (@eq-tilt) biases convergence away from them. The model correctly
+  de-emphasised those features.
+* The Boredale southern back-wall climb is a documented model
+  limitation, not a bug. Valley-wind convergence lines and lee-wave
+  uplift are not modelled (see @sec-limits). A valley-induced
+  thermal release on a back wall is exactly the kind of feature
+  only the planned WindNinja-driven phase could capture. The second
+  pilot scratching for an extended period on the windward face
+  before the convergence-line release triggered is consistent with
+  that physics — valley-wind systems take time to set up.
+
+## Headline
+
+> "I didn't go searching for thermals; I just flew to where I
+> thought they would be and got them in the locations indicated
+> by our model."
+>
+> — operator, 2026-05-11
+
+The model's predicted strong-cluster locations matched the climbs
+found on the day. The single miss (Boredale back wall) is in the
+documented out-of-scope territory of valley-wind convergence. No
+in-scope failure observed.
+
+\newpage
+
+# Known limitations {#sec-limits}
+
+The model is a static, gradient-only proxy for boundary-layer flow.
+The following phenomena are **explicitly out of scope** and should
+not be treated as bugs:
+
+* **Valley-wind convergence lines.** Daytime thermal valley flows
+  meeting synoptic wind release thermals at convergence boundaries
+  that the static flow-accumulation analogy cannot see.
+* **Lee-wave uplift.** Stratified flow over ridges produces standing
+  waves whose lift bands are decoupled from the surface source map.
+* **Mechanical rotors.** Strong-wind separation off lee faces
+  produces turbulent rotors that are themselves thermal sources
+  unrelated to surface heating.
+* **Wind shear.** A single surface-layer wind vector misses
+  directional shear with height.
+* **Post-detachment drift.** The model finds the ground source;
+  once airborne, parcels are advected by ambient flow, which is a
+  separate problem (and one the model deliberately does not
+  attempt).
+
+The planned Phase 5 upgrade replaces the empirical wind-tilt
+coefficient $k$ in @eq-tilt with a terrain-aware wind field
+(WindNinja) and adds a Lagrangian plume model alongside the
+hydrological analogy. WindNinja addresses valley-wind convergence
+and lee-wave geometry directly; the plume model gives a second,
+independent prediction of release density that can be cross-checked
+against the leaky-kernel output.
+
+\newpage
+
+# Where to look next {#sec-next}
+
+* **Phased build plan and validation gates** — `docs/ROADMAP.md`.
+  The current phase is recorded at the top of that file.
+* **Math and physics in full** — `docs/MODEL.md`. The leaky-bucket
+  derivation is §11; earlier sections preserve the predecessor
+  formulations as a historical record.
+* **Validation log** — `docs/VALIDATION.md`. Every render that
+  cleared a gate is documented there, including the Ullswater
+  entry on 2026-05-11.
+* **Data sources and absorptivity tables** — `docs/DATA.md`.
+* **Auto-generated API reference** — `docs/api/` (run `make docs`
+  to (re)build from the `thermal_model/` docstrings).
+* **Outstanding follow-ups** — `docs/TODO.md`.
+
+This PDF is regenerated by `bash docs/pdf/build.sh` whenever the
+model or the Ullswater render changes. The build script reruns the
+render if the figures are missing and then re-typesets via Quarto.

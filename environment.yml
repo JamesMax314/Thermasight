@@ -32,6 +32,10 @@ dependencies:
   # API documentation generator. Renders the package's NumPy-style
   # docstrings to a static HTML site via `make docs`.
   - pdoc
+  # PDF documentation toolchain. Quarto typesets the user-facing
+  # "Thermasight Model" PDF from `docs/pdf/thermasight.qmd`; it
+  # bundles its own TinyTeX so no manual LaTeX setup is required.
+  - quarto
   - pip
   - pip:
       # Editable install of this package.
