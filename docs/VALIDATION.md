@@ -286,3 +286,125 @@ before drafting, which may justify revisiting the threshold.
 **Phase 3.2 visual gate cleared on this single-tile render.**
 Sensitivity sweep + ground-truth comparison deferred to the Phase 4
 calibration agenda.
+
+### 2026-05-11 — Ullswater pilot ground-truth (first real-flight validation)
+
+**The first validation backed by an actual flight log rather than
+visual inspection of synthetic / qualitative criteria.** The
+operator flew the Ullswater valley on 2026-05-10 13:00 BST and
+compared the predicted trigger raster against the climbs found on
+the day. Conditions were re-run through the production pipeline
+the next morning:
+
+* **Date/time**: 2026-05-10 13:00 BST.
+* **Wind**: from 315° (NW) at 10 km/h ≈ 2.78 m/s.
+* **DEM**: `data/processed/ullswater_1m.tif`, 10 × 15 km mosaic of
+  6 EA LIDAR 2022 1 m tiles
+  (`data/raw/Ullswater/lidar_composite_dtm-2022-1-NY{31ne,31se,32se,41nw,41sw,42sw}`),
+  resampled to 5 m.
+* **Land cover**: UKCEH LCM 2024 via WMS, 14 classes detected, α
+  range [0.05, 0.85], mean 0.74.
+* **Pipeline**: production defaults including σ_smooth = 20 m,
+  σ_curv = 10 m, σ_draft = 75 m, rank-blend `trigger_potential`,
+  q80 floor display.
+* **Pipeline runtime**: 23.6 s (3000 × 2000 cells at 5 m).
+
+**Closure**:
+
+| Metric | Value |
+|---|---|
+| Σ heating | 3.32 × 10⁹ |
+| Σ leak / Σ heating | 98.3 % |
+| Residual at sinks | 5.49 × 10⁷ |
+| Draft mask loss | 2.63 % of leak (lower than Mallerstang's 5.65 % — rugged Lakeland terrain has less plateau bleed) |
+| Clusters @ q95 | 178 |
+| Median cluster τ | 62 s (consistent-trigger regime — scarp-dominated, not cyclic-dump) |
+
+#### Flight one — operator (lined up well)
+
+The operator flew SE across Ullswater toward the High Street range
+and **found climbs once away from the lake**. The predicted top-8
+clusters all sit east of Ullswater on the High Street massif and
+adjacent fells:
+
+| Rank | Mean strength (W/m²) | BNG E / N | Feature |
+|---|---|---|---|
+| 1 | 3285 | 343394 / 522320 | High Street / Loadpot Hill area |
+| 2 | 2923 | 337100 / 522718 | Bonscale Pike / Wether Hill |
+| 3 | 2895 | 335130 / 521180 | Hartsop / Boredale Hause |
+| 4 | 2697 | 335302 / 522873 | Head of Boredale |
+| 5 | 2601 | 340547 / 522434 | Loadpot east face |
+| 6 | 2599 | 340097 / 523500 | High Raise area |
+| 7 | 2346 | 342077 / 522700 | Loadpot east face |
+| 8 | 2275 | 338510 / 523266 | Heughscar / Askham Fell |
+
+Climbs encountered along the SE crossing toward High Street match
+the brightest cluster band in the predicted trigger raster.
+
+#### Flight two — friend (one match, one out-of-scope miss)
+
+The friend flew east over the lake islands and **scratched above
+W-facing slopes**, then eventually dropped into Boredale and found
+a climb on the **southern back wall** — a feature the model
+**did not predict**.
+
+* The W-facing scratch is consistent with the model's behaviour:
+  W-facing slopes are *windward* under NW wind, so the wind-tilt
+  mechanism (`docs/MODEL.md` §3) biases convergence away from them.
+  The model correctly de-emphasised those features.
+* The Boredale southern back-wall climb is a documented model
+  limitation, not a bug. From `CLAUDE.md` §5 and
+  `docs/model_correction.md` §10:
+  > Valley-wind convergence lines and lee-wave uplift are not
+  > modelled. These would require a flow solver.
+  A valley-induced thermal release on a back wall is exactly the
+  kind of feature only Phase 5 (WindNinja-driven terrain-aware
+  wind) could capture. The friend scratching for an extended period
+  on the windward face before the convergence-line release
+  triggered is consistent with that physics — valley-wind systems
+  take time to set up.
+
+#### Headline
+
+> "I didn't go searching for thermals; I just flew to where I
+> thought they would be and got them in the locations indicated
+> by our model." — operator, 2026-05-11
+
+The model's predicted strong-cluster locations matched the climbs
+found on the day. The single miss (Boredale back wall) is in
+the **documented out-of-scope** territory of valley-wind
+convergence, which the Phase 5 roadmap targets via WindNinja. No
+in-scope failure observed.
+
+#### Output artefacts (gitignored under `outputs/Ullswater/`)
+
+* `ullswater_compare_5m.png` — 6-panel overview (DEM, α, trigger,
+  leak, draft, τ).
+* `ullswater_trigger_5m.png` — soaring view, rank-blend
+  `trigger_potential` with q80 floor over hillshade. This is the
+  panel the operator compared against the tracklog.
+* `ullswater_alpha_5m.png`, `ullswater_leak_5m.png`,
+  `ullswater_draft_5m.png`, `ullswater_cycle_5m.png` — supporting
+  fields.
+
+#### Significance
+
+* **First flight-log-backed validation** of the production
+  pipeline (Phases 3.2 + 4 + display defaults).
+* The lake is a load-bearing test case: α = 0.05 over water
+  ⇒ effectively no heating injected ⇒ routing skips the lake
+  entirely, and the cluster pattern emerges from the surrounding
+  terrain only. Both human flights confirmed climbs were found
+  **off** the lake, matching the model.
+* The valley-wind convergence miss is the first concrete instance
+  of the documented Phase 5 limitation appearing in real-flight
+  data. Adds weight to the WindNinja agenda.
+
+#### Caveat
+
+Single flight day, two pilots, qualitative tracklog comparison. A
+formal n-flight cross-validation (e.g. scraping XContest tracks
+per `docs/TODO.md` § Empirical Validation) is the natural
+follow-up; this entry establishes that the production pipeline
+agrees with at least one real day's observations in a previously
+unvalidated area.

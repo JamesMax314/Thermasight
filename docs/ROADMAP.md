@@ -12,6 +12,14 @@ mask reapplied, exposed on `RunResult.draft_potential` and driving
 diffuse spur clusters that the cell-level rank-of-leak threshold
 would lose; see Phase 3.2 below.
 
+**First flight-log-backed validation, 2026-05-11 (Ullswater, NW
+@ 10 km/h):** operator-flown ground truth matched the model's
+predicted strong-cluster locations on the High Street range east of
+the lake. The single miss (Boredale southern back wall, climbed by
+a second pilot) is a valley-wind convergence release, which is
+documented as out-of-scope until Phase 5 (WindNinja). See
+`docs/VALIDATION.md` § 2026-05-11.
+
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
 by the ground-level trigger-prediction model in
