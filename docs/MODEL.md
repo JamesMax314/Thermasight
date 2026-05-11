@@ -752,12 +752,43 @@ $\sum \mathrm{leak} + \mathrm{residual\_at\_sinks\_total}
   \equiv \sum H$.
 The new field $\widetilde{\mathrm{leak}}$ is exposed on
 `RunResult.draft_potential` with the same W/m² semantics as
-`leak`; the rank-normalised display field
-`RunResult.trigger_potential` is redefined as
-$\mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})$, and the CLI's
-clustering / KMZ path runs on `draft_potential`. The per-cluster
-cycle-period summary uses a leak-weighted mean of the *raw* per-cell
-$\tau$:
+`leak`. The CLI's clustering / KMZ path runs on `draft_potential`
+(with `leak_weights=leak` for the per-cluster $\tau$ summary). The
+rank-normalised **display** field
+`RunResult.trigger_potential` is the per-cell maximum of two
+independently rank-normalised fields:
+
+$$
+T(\mathbf{x}) = \max\!\bigl(
+    \mathrm{rank\_normalise}(\mathrm{leak})(\mathbf{x}),\;
+    \mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})(\mathbf{x})
+  \bigr).
+$$
+
+Why a rank-blend rather than $\mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})$
+alone? Gaussian aggregation is sum-preserving, so a concentrated
+scarp peak's energy is diluted across the kernel footprint
+(at $\sigma_{\text{draft}} = 75\ \mathrm{m}$ that is
+$\sim 200$ cells at $5\ \mathrm{m}$ grid), reducing its absolute
+$\widetilde{\mathrm{leak}}$ value by the same factor while leaving
+broad spur peaks roughly untouched. The naïve
+$\mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})$ display
+therefore over-suppresses the cell-level scarp peaks that the
+predecessor showed correctly. Ranking each field within its **own**
+positive-cell population puts cells on equal footing: a scarp lip
+in the top 1 % of `leak` and a spur shoulder in the top 1 % of
+`draft_potential` both land near $1.0$, regardless of absolute
+$\mathrm{W/m^2}$. The per-cell $\max$ then asks "in which regime is
+this cell most extreme?" — preserving the spur-rescue effect of
+drafting while keeping scarp visibility. See
+`docs/VALIDATION.md` § 2026-05-11 for the Mallerstang render
+that motivated the choice and quantifies the regime mix (in the
+canonical render, $33 \%$ of cells above q80 of the blend have
+$\mathrm{rank}(\mathrm{leak}) > \mathrm{rank}(\widetilde{\mathrm{leak}})$,
+the rest the other way).
+
+The per-cluster cycle-period summary uses a leak-weighted mean of
+the *raw* per-cell $\tau$:
 $\bar\tau_c = \Sigma_i (\mathrm{leak}_i \cdot \tau_i)
               / \Sigma_i \mathrm{leak}_i$
 over cluster cells with finite $\tau$ and strictly-positive

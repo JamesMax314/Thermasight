@@ -641,9 +641,17 @@ is the wrong scale.
   aggregated field) and `draft_mask_loss_total` (scalar diagnostic
   for energy thrown away by the post-smooth slope mask).
   `trigger_potential` is redefined as
-  `rank_normalise(draft_potential)`. `leak` and
-  `residual_at_sinks_total` are unchanged — the conservation
-  invariant on the underlying physical field is preserved.
+  `max(rank_normalise(leak), rank_normalise(draft_potential))` —
+  the rank-blend that puts the cell-level scarp regime and the
+  aggregated spur regime on equal visual footing (each ranked
+  within its own positive-cell population, then per-cell max).
+  Naïve `rank_normalise(draft_potential)` over-suppressed scarps
+  because Gaussian aggregation dilutes concentrated peaks; the
+  blend rescues both regimes. See `docs/MODEL.md` §11.9 and the
+  `outputs/mallerstang_p34_rank_blend.png` 2026-05-11 render.
+  `leak` and `residual_at_sinks_total` are unchanged — the
+  conservation invariant on the underlying physical field is
+  preserved.
 - [x] `triggers/cluster.py:cluster_triggers` — new optional
   `leak_weights` kwarg. When supplied alongside `cycle_period_s`,
   per-cluster cycle period switches from arithmetic mean of τ to

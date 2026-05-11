@@ -83,11 +83,25 @@ class RunResult:
     Attributes
     ----------
     trigger_potential : np.ndarray
-        Float64, ``[0, 1]``, NaN-passthrough. ``rank_normalise(leak)``.
-        Backward-compatible primary raster. Order-preserving with
-        :attr:`leak` but spread uniformly over the unit interval, so
-        existing thresholding (e.g. clustering at q95) keeps the same
-        meaning.
+        Float64, ``[0, 1]``, NaN-passthrough. The primary display
+        raster. Defined as
+        ``max(rank_normalise(leak), rank_normalise(draft_potential))``
+        — the per-cell maximum of the two physically meaningful
+        fields, each independently ranked within its own positive-cell
+        population. A scarp lip in the top 1 % of ``leak`` (high
+        absolute W/m², concentrated) and a spur shoulder in the top
+        1 % of ``draft_potential`` (lower W/m² after Gaussian
+        smoothing, but spread across many cells) both land near 1.0
+        despite their order-of-magnitude difference in absolute units.
+        The blend rescues diffuse spur clusters that pure
+        cell-level ``rank_normalise(leak)`` lost to the q95 threshold,
+        without the scarp-suppression that pure
+        ``rank_normalise(draft_potential)`` introduced
+        (Gaussian aggregation is sum-preserving, so concentrated peaks
+        get diluted across the kernel footprint). See ``docs/MODEL.md``
+        §11.9 for the derivation and
+        ``outputs/mallerstang_p34_rank_blend.png`` for the
+        validation render.
     leak : np.ndarray
         Float64, W/m² (when heating drives the weights). The per-cell
         time-averaged trigger-release rate from the leaky-bucket
@@ -571,9 +585,25 @@ def run_model(
         np.nansum(np.where(slope_mask, 0.0, np.where(nan_mask, 0.0, draft_smoothed)))
     )
 
-    trigger = _rank_normalise(draft)
-    # Restore NaN where the raw DEM was NaN — _rank_normalise already
-    # writes NaN at NaN cells, but be explicit.
+    # ``trigger_potential`` is the per-cell maximum of two
+    # independently rank-normalised fields: the cell-level ``leak``
+    # (the scarp regime — concentrated peaks, high absolute magnitudes)
+    # and the aggregated ``draft_potential`` (the spur regime — broad
+    # coalesced lift, lower magnitudes after Gaussian smoothing). Each
+    # field is ranked within its own positive-cell population, so a
+    # scarp lip in the top 1 % of leak and a spur shoulder in the top
+    # 1 % of draft both land near 1.0 regardless of their absolute
+    # W/m² difference. The per-cell ``fmax`` then picks "the regime in
+    # which this cell is most extreme". This blend reproduces the
+    # spur-rescue effect of drafting while preserving scarp visibility
+    # that pure ``rank_norm(draft)`` over-suppresses — see
+    # ``outputs/mallerstang_p34_rank_blend.png`` for the 2026-05-11
+    # validation render that motivated the choice. Both
+    # rank-normalised inputs are in [0, 1] with NaN passthrough so
+    # ``fmax`` preserves the NaN-DEM support without explicit masking.
+    leak_rank = _rank_normalise(leaky.leak)
+    draft_rank = _rank_normalise(draft)
+    trigger = np.fmax(leak_rank, draft_rank)
     trigger = np.where(nan_mask, np.nan, trigger)
 
     return RunResult(

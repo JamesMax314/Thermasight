@@ -789,3 +789,72 @@ def test_draft_aggregation_sigma_negative_rejected() -> None:
             wind_speed_ms=0.0,
             draft_aggregation_sigma_m=-1.0,
         )
+
+
+def test_trigger_potential_is_rank_max_of_leak_and_draft() -> None:
+    """``trigger_potential = fmax(rank_norm(leak), rank_norm(draft))``.
+
+    Pins the rank-blend semantics: each input is independently
+    rank-normalised within its own positive-cell support, then the
+    per-cell max picks "the regime in which this cell is more
+    extreme". A scarp lip in the top of ``leak`` and a spur shoulder
+    in the top of ``draft_potential`` end up on equal visual footing
+    despite their order-of-magnitude difference in absolute W/m².
+    """
+    from thermal_model.physics.pipeline import _rank_normalise
+
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=225.0,
+        wind_speed_ms=4.0,
+        smoothing_sigma_m=5.0,
+        draft_aggregation_sigma_m=75.0,
+    )
+    expected = np.fmax(
+        _rank_normalise(result.leak),
+        _rank_normalise(result.draft_potential),
+    )
+    expected = np.where(np.isnan(dem), np.nan, expected)
+    np.testing.assert_array_equal(result.trigger_potential, expected)
+
+    # The blend dominates each input cell-wise (definitionally) and lies
+    # within [0, 1] on finite cells.
+    finite = np.isfinite(result.trigger_potential)
+    assert (result.trigger_potential[finite] >= 0.0).all()
+    assert (result.trigger_potential[finite] <= 1.0).all()
+    assert (
+        result.trigger_potential[finite] >= _rank_normalise(result.leak)[finite]
+    ).all()
+    assert (
+        result.trigger_potential[finite]
+        >= _rank_normalise(result.draft_potential)[finite]
+    ).all()
+
+
+def test_trigger_potential_sigma_zero_equals_rank_norm_leak() -> None:
+    """At σ_draft=0, leak == draft_potential, so the rank-blend
+    collapses to the cell-level ``rank_normalise(leak)`` exactly —
+    the predecessor display semantics."""
+    from thermal_model.physics.pipeline import _rank_normalise
+
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=180.0,
+        wind_speed_ms=3.0,
+        smoothing_sigma_m=5.0,
+        draft_aggregation_sigma_m=0.0,
+    )
+    np.testing.assert_array_equal(result.draft_potential, result.leak)
+    expected = _rank_normalise(result.leak)
+    expected = np.where(np.isnan(dem), np.nan, expected)
+    np.testing.assert_array_equal(result.trigger_potential, expected)
