@@ -29,6 +29,10 @@ dependencies:
   - hypothesis
   - ruff
   - mypy
+  # PDF documentation toolchain. Quarto typesets the user-facing
+  # "Thermasight Model" PDF from `docs/pdf/thermasight.qmd`; it
+  # bundles its own TinyTeX so no manual LaTeX setup is required.
+  - quarto
   - pip
   - pip:
       # Editable install of this package.
