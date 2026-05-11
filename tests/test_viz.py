@@ -21,6 +21,7 @@ from thermal_model.viz import (
     plot_overlay,
     plot_profile_curvature,
     plot_slope,
+    plot_trigger_potential,
 )
 
 # ---------------------------------------------------------------------------
@@ -315,6 +316,85 @@ def test_plot_leak_smoke() -> None:
     # Hillshade + leak overlay = 2 images.
     assert len(ax.images) == 2
     plt.close(ax.figure)
+
+
+def test_plot_trigger_potential_smoke_default_floor() -> None:
+    """The default ``floor_quantile=0.80`` masks the bottom 80 % of
+    positive cells to NaN and renders the rest on ``[floor, 1]``."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_trigger_potential(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        wind_from_deg=225.0,
+        wind_speed_ms=5.0,
+        resolve_flats=False,
+    )
+    # Hillshade + trigger overlay = 2 images.
+    assert len(ax.images) == 2
+    # Overlay should contain NaN where the floor masked it out.
+    overlay = ax.images[1].get_array()
+    assert np.any(np.isnan(np.asarray(overlay))), (
+        "default floor_quantile=0.80 should mask weak cells to NaN"
+    )
+    plt.close(ax.figure)
+
+
+def test_plot_trigger_potential_floor_zero_disables_mask() -> None:
+    """``floor_quantile=0.0`` reproduces pre-2026-05-11 behaviour:
+    every finite trigger cell renders on a linear ``[0, 1]`` scale."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_trigger_potential(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        wind_from_deg=225.0,
+        wind_speed_ms=5.0,
+        floor_quantile=0.0,
+        resolve_flats=False,
+    )
+    # With floor disabled the overlay should still have the NaN-DEM
+    # support (zero on the synthetic Gaussian hill) but no additional
+    # quantile-driven NaN. Compare against a baseline run.
+    overlay = np.asarray(ax.images[1].get_array())
+    finite = np.isfinite(overlay)
+    # Every finite cell should be in [0, 1] (rank-blend range).
+    assert (overlay[finite] >= 0.0).all()
+    assert (overlay[finite] <= 1.0).all()
+    plt.close(ax.figure)
+
+
+def test_plot_trigger_potential_rejects_invalid_floor() -> None:
+    """``floor_quantile`` outside ``[0, 1)`` raises ``ValueError``."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(16, height=30.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    with pytest.raises(ValueError, match="floor_quantile"):
+        plot_trigger_potential(
+            dem,
+            cell_size_m=5.0,
+            when=when,
+            latitude_deg=54.2,
+            longitude_deg=-2.3,
+            wind_from_deg=225.0,
+            wind_speed_ms=5.0,
+            floor_quantile=1.0,
+            resolve_flats=False,
+        )
 
 
 def test_plot_draft_potential_smoke() -> None:

@@ -787,6 +787,20 @@ canonical render, $33 \%$ of cells above q80 of the blend have
 $\mathrm{rank}(\mathrm{leak}) > \mathrm{rank}(\widetilde{\mathrm{leak}})$,
 the rest the other way).
 
+**Display convention** (`viz.plot_trigger_potential`,
+`preview --what trigger`): the trigger overlay defaults to a
+quantile floor at $q_{0.80}$ of the strictly-positive trigger
+cells. Cells below the floor render transparent so the hillshade
+reads through; the magma colour scale spans floor → 1.0 linearly,
+so the top 20 % of cells use the full colormap dynamic range
+instead of being squashed into its upper register. This is the
+soaring-planning view validated on Mallerstang on 2026-05-11 —
+weak triggers fall away, strong features (scarp lines, spur
+shoulders) stand out cleanly over the 3D terrain. Pass
+`floor_quantile=0.0` (or `--trigger-floor-quantile 0` from the
+CLI) to recover the pre-2026-05-11 behaviour (whole $[0, 1]$
+visible on a linear scale).
+
 The per-cluster cycle-period summary uses a leak-weighted mean of
 the *raw* per-cell $\tau$:
 $\bar\tau_c = \Sigma_i (\mathrm{leak}_i \cdot \tau_i)

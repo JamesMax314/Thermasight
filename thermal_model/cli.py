@@ -248,6 +248,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preview.add_argument(
+        "--trigger-floor-quantile",
+        type=float,
+        default=0.80,
+        metavar="Q",
+        help=(
+            "For --what trigger only. Quantile of strictly-positive trigger "
+            "cells used as a transparency floor in the rendered overlay. "
+            "Cells below the floor render transparent so the hillshade reads "
+            "through; the colour scale spans floor → 1.0. Default 0.80 "
+            "(top 20 %% visible — the soaring-planning view). Pass 0 to "
+            "render every positive cell on a linear 0–1 scale."
+        ),
+    )
+    preview.add_argument(
         "--min-slope",
         type=float,
         default=2.5,
@@ -652,6 +666,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
                     "f_max": float(args.f_max),
                 }
             )
+        if args.what == "trigger":
+            kwargs["floor_quantile"] = float(args.trigger_floor_quantile)
         wind_plotter = {
             "trigger": plot_trigger_potential,
             "weighted-convergence": plot_weighted_convergence,
