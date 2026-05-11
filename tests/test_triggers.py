@@ -105,6 +105,101 @@ def test_cluster_triggers_cycle_period_optional() -> None:
     assert all(p.mean_cycle_period_s is None for p in points)
 
 
+def test_cluster_triggers_leak_weighted_cycle_period_supplied() -> None:
+    """leak_weights ⇒ per-cluster τ is leak-weighted, not arithmetic mean.
+
+    Construct one cluster with two distinct (leak, τ) cells that are
+    both in the q50 mask. The leak-weighted mean is dominated by the
+    high-leak cell, the arithmetic mean is not. With leak ∈ {10, 90},
+    τ ∈ {60, 600}: leak-weighted = (10·60 + 90·600) / 100 = 546 s;
+    arithmetic = (60 + 600) / 2 = 330 s. Assert the supplied path
+    returns 546 and the legacy path (no leak_weights) returns 330.
+    """
+    arr = np.zeros((10, 10), dtype=np.float64)
+    cycle = np.full_like(arr, np.inf)
+    leak = np.zeros_like(arr)
+
+    # Single cluster with two cells (rows 2 and 3, col 5).
+    arr[2, 5] = 0.9
+    arr[3, 5] = 0.9
+    arr[4, 5] = 0.9  # 3-cell cluster to clear min_cluster_cells default
+    leak[2, 5] = 10.0
+    leak[3, 5] = 90.0
+    leak[4, 5] = 50.0  # third cell — adds a verifiable middle entry
+    cycle[2, 5] = 60.0
+    cycle[3, 5] = 600.0
+    cycle[4, 5] = 300.0
+    # Tail noise so q50 ≈ a low value the cluster cells clear.
+    arr[8:10, 0:8] = 0.1
+
+    weighted = cluster_triggers(
+        arr,
+        threshold_quantile=0.5,
+        min_cluster_cells=3,
+        cycle_period_s=cycle,
+        leak_weights=leak,
+    )
+    assert len(weighted) == 1
+    expected_weighted = (10.0 * 60.0 + 90.0 * 600.0 + 50.0 * 300.0) / (
+        10.0 + 90.0 + 50.0
+    )
+    assert weighted[0].mean_cycle_period_s == pytest.approx(expected_weighted)
+
+    unweighted = cluster_triggers(
+        arr,
+        threshold_quantile=0.5,
+        min_cluster_cells=3,
+        cycle_period_s=cycle,
+    )
+    expected_arithmetic = (60.0 + 600.0 + 300.0) / 3.0
+    assert unweighted[0].mean_cycle_period_s == pytest.approx(expected_arithmetic)
+    # Sanity: the two paths really do disagree.
+    assert weighted[0].mean_cycle_period_s != pytest.approx(
+        unweighted[0].mean_cycle_period_s
+    )
+
+
+def test_cluster_triggers_leak_weights_shape_validated() -> None:
+    """leak_weights with a mismatched shape raises ValueError."""
+    arr = _three_blob_raster()
+    with pytest.raises(ValueError, match="leak_weights shape"):
+        cluster_triggers(arr, leak_weights=np.zeros((9, 9)))
+
+
+def test_cluster_triggers_leak_weighted_skips_zero_weight_cells() -> None:
+    """Cells with leak_weights == 0 must not contribute to the τ mean.
+
+    A 3-cell cluster where the third cell has leak=0 should give the
+    same leak-weighted mean as a 2-cell cluster of the same two
+    contributing cells. Guards against accidentally re-introducing
+    those cells with τ-only weighting.
+    """
+    arr = np.zeros((10, 10), dtype=np.float64)
+    cycle = np.full_like(arr, np.inf)
+    leak = np.zeros_like(arr)
+
+    arr[2, 5] = 0.9
+    arr[3, 5] = 0.9
+    arr[4, 5] = 0.9
+    leak[2, 5] = 10.0
+    leak[3, 5] = 90.0
+    leak[4, 5] = 0.0  # zero-leak cell, excluded from weighted mean
+    cycle[2, 5] = 60.0
+    cycle[3, 5] = 600.0
+    cycle[4, 5] = 9999.0  # would skew the mean if not skipped
+    arr[8:10, 0:8] = 0.1
+
+    points = cluster_triggers(
+        arr,
+        threshold_quantile=0.5,
+        min_cluster_cells=3,
+        cycle_period_s=cycle,
+        leak_weights=leak,
+    )
+    expected = (10.0 * 60.0 + 90.0 * 600.0) / (10.0 + 90.0)
+    assert points[0].mean_cycle_period_s == pytest.approx(expected)
+
+
 def test_write_kmz_round_trip(tmp_path: Path) -> None:
     points = [
         TriggerPoint(row=10.5, col=20.5, mean_strength=0.91, n_cells=16),

@@ -30,6 +30,7 @@ _PREVIEW_CHOICES = (
     "trigger",
     "weighted-convergence",
     "leak",
+    "draft",
     "cycle-period",
     "all",
 )
@@ -37,6 +38,7 @@ _WIND_REQUIRING_CHOICES = (
     "trigger",
     "weighted-convergence",
     "leak",
+    "draft",
     "cycle-period",
 )
 
@@ -233,6 +235,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preview.add_argument(
+        "--draft-aggregation-sigma",
+        type=float,
+        default=75.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (metres) for the post-kernel aggregation of "
+            "the leak field into draft_potential (drives the rank-normalised "
+            "trigger raster and clustering). Models the coalescence of "
+            "rising buoyant plumes. Default 75 m. Pass 0 to disable "
+            "(trigger raster collapses to rank_normalise(leak))."
+        ),
+    )
+    preview.add_argument(
+        "--trigger-floor-quantile",
+        type=float,
+        default=0.80,
+        metavar="Q",
+        help=(
+            "For --what trigger only. Quantile of strictly-positive trigger "
+            "cells used as a transparency floor in the rendered overlay. "
+            "Cells below the floor render transparent so the hillshade reads "
+            "through; the colour scale spans floor → 1.0. Default 0.80 "
+            "(top 20 %% visible — the soaring-planning view). Pass 0 to "
+            "render every positive cell on a linear 0–1 scale."
+        ),
+    )
+    preview.add_argument(
         "--min-slope",
         type=float,
         default=2.5,
@@ -394,6 +423,18 @@ def build_parser() -> argparse.ArgumentParser:
             "and slope feed the leaky shape functions. Suppresses single-cell "
             "LIDAR speckle in κ⁺. Independent of --smoothing-sigma. Default 10. "
             "Pass 0 to reproduce pre-2026-05-09 behaviour."
+        ),
+    )
+    run.add_argument(
+        "--draft-aggregation-sigma",
+        type=float,
+        default=75.0,
+        metavar="METRES",
+        help=(
+            "Gaussian sigma (m) for the post-kernel aggregation of the leak "
+            "field into draft_potential (drives trigger_potential and "
+            "clustering). Models the coalescence of rising buoyant plumes. "
+            "Default 75. Pass 0 to disable."
         ),
     )
     run.add_argument(
@@ -572,6 +613,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         plot_aspect,
         plot_convergence,
         plot_cycle_period,
+        plot_draft_potential,
         plot_heating,
         plot_leak,
         plot_profile_curvature,
@@ -606,14 +648,15 @@ def _cmd_preview(args: argparse.Namespace) -> int:
                 "wind_tilt_k": float(args.wind_tilt_k),
                 "smoothing_sigma_m": float(args.smoothing_sigma),
                 "curvature_smoothing_sigma_m": float(args.curvature_smoothing_sigma),
+                "draft_aggregation_sigma_m": float(args.draft_aggregation_sigma),
                 "min_slope_deg": float(args.min_slope),
                 "resolve_flats": bool(args.resolve_flats),
             }
         )
-        # leak / cycle-period plotters accept the new leak-shape params;
-        # the older trigger / weighted-convergence plotters do not, so
-        # only pass them through for the relevant plotters.
-        if args.what in ("leak", "cycle-period"):
+        # leak / draft / cycle-period plotters accept the new leak-shape
+        # params; the older trigger / weighted-convergence plotters do not,
+        # so only pass them through for the relevant plotters.
+        if args.what in ("leak", "draft", "cycle-period"):
             kwargs.update(
                 {
                     "slope_scale_deg": float(args.slope_scale),
@@ -623,10 +666,13 @@ def _cmd_preview(args: argparse.Namespace) -> int:
                     "f_max": float(args.f_max),
                 }
             )
+        if args.what == "trigger":
+            kwargs["floor_quantile"] = float(args.trigger_floor_quantile)
         wind_plotter = {
             "trigger": plot_trigger_potential,
             "weighted-convergence": plot_weighted_convergence,
             "leak": plot_leak,
+            "draft": plot_draft_potential,
             "cycle-period": plot_cycle_period,
         }[args.what]
         fig, ax = plt.subplots(figsize=(9, 8), dpi=args.dpi)
@@ -761,6 +807,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         wind_tilt_k=float(args.wind_tilt_k),
         smoothing_sigma_m=float(args.smoothing_sigma),
         curvature_smoothing_sigma_m=float(args.curvature_smoothing_sigma),
+        draft_aggregation_sigma_m=float(args.draft_aggregation_sigma),
         min_slope_deg=float(args.min_slope),
         slope_scale_deg=float(args.slope_scale),
         kappa_ref=float(args.kappa_ref),
@@ -793,15 +840,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"wrote {args.cycle_period_out}")
 
     if args.kmz is not None:
-        # Cluster on absolute leak (W/m²), not the rank-normalised
-        # trigger raster, so the KMZ description carries physically
-        # meaningful strength values that compare across tiles.
-        # Cycle period is averaged over each cluster and embedded.
+        # Cluster on absolute draft_potential (W/m²), not the
+        # rank-normalised trigger raster, so the KMZ description
+        # carries physically meaningful strength values that compare
+        # across tiles. Clustering on the aggregated field rescues
+        # diffuse spur clusters that the cell-level leak would lose
+        # to q95 thresholding. Cycle period is averaged per cluster
+        # via the leak-weighted mean of the *raw* per-cell τ — the
+        # "dominant cycle of the cells actually producing this
+        # thermal", which is more informative than an arithmetic
+        # mean over the smoothed cluster footprint.
         points = cluster_triggers(
-            result.leak,
+            result.draft_potential,
             threshold_quantile=float(args.cluster_quantile),
             min_cluster_cells=int(args.min_cluster_cells),
             cycle_period_s=result.cycle_period_s,
+            leak_weights=result.leak,
         )
         if not points:
             print(f"no trigger clusters survived; skipping {args.kmz}")

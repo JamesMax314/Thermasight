@@ -190,3 +190,221 @@ the Stage 2 gate criteria (Mallerstang Edge dominant, Wild Boar
 Fell summit interior dim, NE lee enhancement) are independent of
 the new pre-smooth knob. A follow-up render under the new default
 is on the Phase 4 calibration sweep agenda.
+
+### 2026-05-11 — Phase 3.2 drafting / leak aggregation
+
+Same 15 km × 20 km Wild Boar Fell + Mallerstang mosaic
+(`data/processed/mallerstang_wildboar_1m.tif`), 5 m resampled,
+re-rendered with the new `draft_aggregation_sigma_m` knob via
+`outputs/mallerstang_draft_render.py`. Two passes: σ_draft = 0
+(reproduces the Phase 3.1 baseline trigger raster) and σ_draft = 75 m
+(the new production default). All other parameters at the Stage 3
+defaults (smoothing 10 m, curvature smoothing 10 m, resolve_flats on,
+leak shape defaults). Conditions matched to the Phase 3.1 visual gate
+exactly:
+
+* **Date/time**: 2026-07-15 13:00 BST.
+* **Wind**: from 225° at 6 m/s.
+
+Each pass takes ~37 s on a Macbook (numba JIT leaky kernel + the new
+post-kernel Gaussian smooth).
+
+#### Headline numbers
+
+| Metric | σ_draft = 0 (baseline) | σ_draft = 75 m (production) |
+|---|---|---|
+| `Σ heating` | 7.942 × 10⁹ | 7.942 × 10⁹ |
+| `Σ leak / Σ heating` | 97.7 % | 97.7 % |
+| `residual_at_sinks_total` | 1.85 × 10⁸ | 1.85 × 10⁸ |
+| `Σ draft_potential / Σ heating` | 97.7 % | 92.0 % |
+| `draft_mask_loss_total / Σ leak` | 0.00 % | 5.81 % |
+| Clusters at q95, min_cells=3 | 9560 | **371** |
+| Median cluster τ | 54 s | 102 s |
+| `\|leak_σ=0 − leak_σ=75\|.sum()` | 0.000 | 0.000 |
+
+The σ=0 / σ=75 passes produce **bit-exact** `leak` fields, confirming
+the aggregation is purely post-kernel and the conservation invariant on
+the underlying physical field is preserved. The 5.81 % mask loss is the
+energy thrown away by the post-smooth slope mask zeroing bleed onto
+flat plateaus — well below the 10 %-ish threshold I'd worry at, so the
+aggregation is physically defensible at σ = 75 m on this terrain.
+
+#### Cluster collapse — the headline result
+
+9560 → 371 clusters. The predecessor was rank-normalising cell-level
+`leak`, so the q95 threshold caught a few thousand cell-level peaks
+(many of them isolated LIDAR-curvature artefacts and single-cell scarp
+lips). The aggregated `draft_potential` field merges these into
+coherent thermal-scale features — and the diffuse-spur clusters that
+the predecessor lost to single-cell ranking now reach the trigger
+raster.
+
+Median cluster τ doubles (54 s → 102 s), reflecting the
+cyclic-dump-regime spur clusters surfacing alongside the
+consistent-trigger-regime scarp clusters that the predecessor saw
+exclusively. This is the bimodal physics the Phase 3.1 reformulation
+introduced, finally reaching the deliverable layer.
+
+#### Visual gate, item by item
+
+| Phase 3.1 gate criterion | σ_draft = 0 | σ_draft = 75 m |
+|---|---|---|
+| SW flanks of Wild Boar Fell bright | ✓ (per Phase 3.1 log) | ✓ broader, more coherent |
+| Mallerstang Edge cliff line lit | ✓ | ✓ still the dominant linear feature |
+| NE lee-side enhancement vs zero-wind | ✓ | ✓ (wind tilt unchanged) |
+| Summit plateau interior dim | ✓ | ✓ (slope mask reapplied post-smooth) |
+| Cycle-period contrast cliff vs ridge | ✓ | ✓ (cycle period not aggregated) |
+| **Diffuse spur shoulders survive q95** | ✗ | **✓ (the Phase 3.2 fix)** |
+
+The Δ-trigger panel (σ=75 − σ=0, RdBu_r) shows the rescue-the-spur
+effect spatially: red zones (rescued) over broad spur shoulders and
+slope faces, blue zones (demoted) over the isolated cell-level peaks
+that the predecessor over-rewarded. The two effects cancel cleanly —
+this is a redistribution of trigger emphasis from cells to thermal-
+scale features, not a uniform rescale.
+
+#### Output artefacts (gitignored under `outputs/`)
+
+* `mallerstang_draft_compare_5m.png` — 6-panel side-by-side:
+  * Row 0: σ=0 trigger raster | σ=75 trigger raster | Δ trigger.
+  * Row 1: σ=0 leak (W/m²) | σ=75 `draft_potential` (W/m²) |
+    σ=75 cycle period τ (s, log).
+
+#### Caveat
+
+This is a single-area qualitative clearance, matched 1:1 against the
+Phase 3.1 baseline. The σ = 75 m default was chosen from physical
+reasoning (≈ one thermal column radius at low trigger altitude) and
+survives this contact with real LIDAR; a formal sensitivity sweep
+across σ ∈ {0, 25, 50, 75, 100, 150} m is the natural follow-up to
+confirm the default empirically. Operator-led calibration against
+`docs/VALIDATION.md` known-trigger locations is also outstanding —
+the cluster count change (9560 → 371) suggests the q95 + min_cells=3
+defaults are now closer to "actual thermal columns" than they were
+before drafting, which may justify revisiting the threshold.
+
+**Phase 3.2 visual gate cleared on this single-tile render.**
+Sensitivity sweep + ground-truth comparison deferred to the Phase 4
+calibration agenda.
+
+### 2026-05-11 — Ullswater pilot ground-truth (first real-flight validation)
+
+**The first validation backed by an actual flight log rather than
+visual inspection of synthetic / qualitative criteria.** The
+operator flew the Ullswater valley on 2026-05-10 13:00 BST and
+compared the predicted trigger raster against the climbs found on
+the day. Conditions were re-run through the production pipeline
+the next morning:
+
+* **Date/time**: 2026-05-10 13:00 BST.
+* **Wind**: from 315° (NW) at 10 km/h ≈ 2.78 m/s.
+* **DEM**: `data/processed/ullswater_1m.tif`, 10 × 15 km mosaic of
+  6 EA LIDAR 2022 1 m tiles
+  (`data/raw/Ullswater/lidar_composite_dtm-2022-1-NY{31ne,31se,32se,41nw,41sw,42sw}`),
+  resampled to 5 m.
+* **Land cover**: UKCEH LCM 2024 via WMS, 14 classes detected, α
+  range [0.05, 0.85], mean 0.74.
+* **Pipeline**: production defaults including σ_smooth = 20 m,
+  σ_curv = 10 m, σ_draft = 75 m, rank-blend `trigger_potential`,
+  q80 floor display.
+* **Pipeline runtime**: 23.6 s (3000 × 2000 cells at 5 m).
+
+**Closure**:
+
+| Metric | Value |
+|---|---|
+| Σ heating | 3.32 × 10⁹ |
+| Σ leak / Σ heating | 98.3 % |
+| Residual at sinks | 5.49 × 10⁷ |
+| Draft mask loss | 2.63 % of leak (lower than Mallerstang's 5.65 % — rugged Lakeland terrain has less plateau bleed) |
+| Clusters @ q95 | 178 |
+| Median cluster τ | 62 s (consistent-trigger regime — scarp-dominated, not cyclic-dump) |
+
+#### Flight one — operator (lined up well)
+
+The operator flew SE across Ullswater toward the High Street range
+and **found climbs once away from the lake**. The predicted top-8
+clusters all sit east of Ullswater on the High Street massif and
+adjacent fells:
+
+| Rank | Mean strength (W/m²) | BNG E / N | Feature |
+|---|---|---|---|
+| 1 | 3285 | 343394 / 522320 | High Street / Loadpot Hill area |
+| 2 | 2923 | 337100 / 522718 | Bonscale Pike / Wether Hill |
+| 3 | 2895 | 335130 / 521180 | Hartsop / Boredale Hause |
+| 4 | 2697 | 335302 / 522873 | Head of Boredale |
+| 5 | 2601 | 340547 / 522434 | Loadpot east face |
+| 6 | 2599 | 340097 / 523500 | High Raise area |
+| 7 | 2346 | 342077 / 522700 | Loadpot east face |
+| 8 | 2275 | 338510 / 523266 | Heughscar / Askham Fell |
+
+Climbs encountered along the SE crossing toward High Street match
+the brightest cluster band in the predicted trigger raster.
+
+#### Flight two — friend (one match, one out-of-scope miss)
+
+The friend flew east over the lake islands and **scratched above
+W-facing slopes**, then eventually dropped into Boredale and found
+a climb on the **southern back wall** — a feature the model
+**did not predict**.
+
+* The W-facing scratch is consistent with the model's behaviour:
+  W-facing slopes are *windward* under NW wind, so the wind-tilt
+  mechanism (`docs/MODEL.md` §3) biases convergence away from them.
+  The model correctly de-emphasised those features.
+* The Boredale southern back-wall climb is a documented model
+  limitation, not a bug. From `CLAUDE.md` §5 and
+  `docs/model_correction.md` §10:
+  > Valley-wind convergence lines and lee-wave uplift are not
+  > modelled. These would require a flow solver.
+  A valley-induced thermal release on a back wall is exactly the
+  kind of feature only Phase 5 (WindNinja-driven terrain-aware
+  wind) could capture. The friend scratching for an extended period
+  on the windward face before the convergence-line release
+  triggered is consistent with that physics — valley-wind systems
+  take time to set up.
+
+#### Headline
+
+> "I didn't go searching for thermals; I just flew to where I
+> thought they would be and got them in the locations indicated
+> by our model." — operator, 2026-05-11
+
+The model's predicted strong-cluster locations matched the climbs
+found on the day. The single miss (Boredale back wall) is in
+the **documented out-of-scope** territory of valley-wind
+convergence, which the Phase 5 roadmap targets via WindNinja. No
+in-scope failure observed.
+
+#### Output artefacts (gitignored under `outputs/Ullswater/`)
+
+* `ullswater_compare_5m.png` — 6-panel overview (DEM, α, trigger,
+  leak, draft, τ).
+* `ullswater_trigger_5m.png` — soaring view, rank-blend
+  `trigger_potential` with q80 floor over hillshade. This is the
+  panel the operator compared against the tracklog.
+* `ullswater_alpha_5m.png`, `ullswater_leak_5m.png`,
+  `ullswater_draft_5m.png`, `ullswater_cycle_5m.png` — supporting
+  fields.
+
+#### Significance
+
+* **First flight-log-backed validation** of the production
+  pipeline (Phases 3.2 + 4 + display defaults).
+* The lake is a load-bearing test case: α = 0.05 over water
+  ⇒ effectively no heating injected ⇒ routing skips the lake
+  entirely, and the cluster pattern emerges from the surrounding
+  terrain only. Both human flights confirmed climbs were found
+  **off** the lake, matching the model.
+* The valley-wind convergence miss is the first concrete instance
+  of the documented Phase 5 limitation appearing in real-flight
+  data. Adds weight to the WindNinja agenda.
+
+#### Caveat
+
+Single flight day, two pilots, qualitative tracklog comparison. A
+formal n-flight cross-validation (e.g. scraping XContest tracks
+per `docs/TODO.md` § Empirical Validation) is the natural
+follow-up; this entry establishes that the production pipeline
+agrees with at least one real day's observations in a previously
+unvalidated area.

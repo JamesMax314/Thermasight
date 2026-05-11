@@ -79,6 +79,7 @@ def cluster_triggers(
     min_cluster_cells: int = 3,
     connectivity: int = 8,
     cycle_period_s: np.ndarray | None = None,
+    leak_weights: np.ndarray | None = None,
 ) -> list[TriggerPoint]:
     """Cluster a trigger raster into discrete trigger points.
 
@@ -111,6 +112,20 @@ def cluster_triggers(
         cluster (excluding cells with infinite period — i.e. only
         cells that actually leak contribute). When omitted, the
         ``mean_cycle_period_s`` field is left as ``None``.
+    leak_weights : np.ndarray, optional
+        Per-cell weights for the cycle-period mean. When supplied
+        alongside ``cycle_period_s`` the per-cluster cycle period is
+        ``Σ_i (leak_i · τ_i) / Σ_i leak_i`` over cluster cells with
+        finite ``τ`` and strictly-positive ``leak`` — "the dominant
+        cycle period of the cells *actually producing* this thermal".
+        Recommended whenever the strength raster has been aggregated
+        (e.g. ``draft_potential`` from
+        :class:`thermal_model.physics.RunResult`), since smoothed
+        clusters span many low-leak cells whose cycle periods
+        otherwise dilute the cluster average. When omitted the mean
+        falls back to an unweighted arithmetic mean of ``τ`` over
+        finite cells, matching pre-2026-05 behaviour. Ignored when
+        ``cycle_period_s`` is ``None``.
 
     Returns
     -------
@@ -141,6 +156,11 @@ def cluster_triggers(
     if cycle_period_s is not None and cycle_period_s.shape != trigger_potential.shape:
         raise ValueError(
             f"cycle_period_s shape {cycle_period_s.shape} != "
+            f"trigger_potential shape {trigger_potential.shape}"
+        )
+    if leak_weights is not None and leak_weights.shape != trigger_potential.shape:
+        raise ValueError(
+            f"leak_weights shape {leak_weights.shape} != "
             f"trigger_potential shape {trigger_potential.shape}"
         )
 
@@ -178,29 +198,57 @@ def cluster_triggers(
 
     # Optional cycle-period averaging. Only include finite cells
     # within each labelled cluster; +inf cells (leak == 0) would
-    # contaminate the mean even though they cannot be in the mask
-    # (mask requires arr > threshold > 0, and a cell with leak == 0
-    # also has its trigger raster value at 0). In practice the mask
-    # already excludes those cells; the np.where here is defensive
-    # and handles the case where someone passes in a strength raster
-    # decoupled from cycle_period_s (e.g. a normalised version).
+    # contaminate the mean even though they typically cannot be in
+    # the mask when strength tracks leak (a cell with leak == 0 has
+    # its trigger raster value at 0). With aggregation, the strength
+    # raster is decoupled from per-cell leak — a smoothed cluster can
+    # contain low-leak cells whose τ is huge — so we drop +inf cells
+    # explicitly and prefer the leak-weighted mean when leak_weights
+    # is supplied.
     cycle_means_arr: np.ndarray | None = None
     if cycle_period_s is not None:
         cps = np.asarray(cycle_period_s, dtype=np.float64)
-        finite_cycle = np.isfinite(cps) & (labels_arr > 0)
-        cycle_for_mean = np.where(finite_cycle, cps, 0.0)
-        cycle_count = ndimage.sum(
-            finite_cycle.astype(np.int64), labels_arr, index=component_ids
-        )
-        cycle_sum = ndimage.sum(cycle_for_mean, labels_arr, index=component_ids)
-        cycle_count_arr = np.atleast_1d(np.asarray(cycle_count, dtype=np.int64))
-        cycle_sum_arr = np.atleast_1d(np.asarray(cycle_sum, dtype=np.float64))
-        with np.errstate(divide="ignore", invalid="ignore"):
-            cycle_means_arr = np.where(
-                cycle_count_arr > 0,
-                cycle_sum_arr / cycle_count_arr.astype(np.float64),
-                np.nan,
+        if leak_weights is not None:
+            weights_arr = np.asarray(leak_weights, dtype=np.float64)
+            valid = (
+                np.isfinite(cps)
+                & np.isfinite(weights_arr)
+                & (weights_arr > 0.0)
+                & (labels_arr > 0)
             )
+            # Compute the leak-weighted τ on the valid-cell support only.
+            # ``cps`` contains +inf at non-leaking cells; ``np.where``
+            # evaluates both branches and would raise ``inf * 0`` warnings
+            # if we let it touch those cells. Mask first.
+            cps_safe = np.where(valid, cps, 0.0)
+            weights_safe = np.where(valid, weights_arr, 0.0)
+            weighted_tau = cps_safe * weights_safe
+            weight_used = weights_safe
+            tau_sum = ndimage.sum(weighted_tau, labels_arr, index=component_ids)
+            weight_sum = ndimage.sum(weight_used, labels_arr, index=component_ids)
+            tau_sum_arr = np.atleast_1d(np.asarray(tau_sum, dtype=np.float64))
+            weight_sum_arr = np.atleast_1d(np.asarray(weight_sum, dtype=np.float64))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                cycle_means_arr = np.where(
+                    weight_sum_arr > 0.0,
+                    tau_sum_arr / weight_sum_arr,
+                    np.nan,
+                )
+        else:
+            finite_cycle = np.isfinite(cps) & (labels_arr > 0)
+            cycle_for_mean = np.where(finite_cycle, cps, 0.0)
+            cycle_count = ndimage.sum(
+                finite_cycle.astype(np.int64), labels_arr, index=component_ids
+            )
+            cycle_sum = ndimage.sum(cycle_for_mean, labels_arr, index=component_ids)
+            cycle_count_arr = np.atleast_1d(np.asarray(cycle_count, dtype=np.int64))
+            cycle_sum_arr = np.atleast_1d(np.asarray(cycle_sum, dtype=np.float64))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                cycle_means_arr = np.where(
+                    cycle_count_arr > 0,
+                    cycle_sum_arr / cycle_count_arr.astype(np.float64),
+                    np.nan,
+                )
 
     points: list[TriggerPoint] = []
     for k, (size, mean_t, centre) in enumerate(

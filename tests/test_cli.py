@@ -203,7 +203,7 @@ def test_preview_heating_rejects_naive_datetime(synthetic_dem_path: Path) -> Non
 
 @pytest.mark.parametrize(
     "what",
-    ["trigger", "weighted-convergence", "leak", "cycle-period"],
+    ["trigger", "weighted-convergence", "leak", "draft", "cycle-period"],
 )
 def test_preview_wind_views_write_png(
     synthetic_dem_path: Path, tmp_path: Path, what: str
@@ -264,6 +264,33 @@ def test_run_writes_trigger_leak_and_cycle_outputs(
     assert trigger_out.exists() and trigger_out.stat().st_size > 0
     assert leak_out.exists() and leak_out.stat().st_size > 0
     assert cycle_out.exists() and cycle_out.stat().st_size > 0
+
+
+def test_run_accepts_draft_aggregation_sigma(
+    synthetic_dem_path: Path, tmp_path: Path
+) -> None:
+    """The new --draft-aggregation-sigma flag is honoured end-to-end."""
+    trigger_out = tmp_path / "trigger.tif"
+    rc = main(
+        [
+            "run",
+            "--dem",
+            str(synthetic_dem_path),
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--wind-from",
+            "225",
+            "--wind-speed",
+            "5",
+            "--draft-aggregation-sigma",
+            "30",
+            "--no-resolve-flats",
+            "--out",
+            str(trigger_out),
+        ]
+    )
+    assert rc == 0
+    assert trigger_out.exists() and trigger_out.stat().st_size > 0
 
 
 def test_mosaic_cli_writes_output(tmp_path: Path, synthetic_dem_path: Path) -> None:
