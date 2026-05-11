@@ -55,6 +55,49 @@ def synthetic_dem_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def synthetic_lcm_path(tmp_path: Path) -> Path:
+    """A 256×256 synthetic UKCEH LCM raster aligned with ``synthetic_dem_path``.
+
+    Four quadrants covering the most physically distinct DATA.md
+    surfaces:
+
+    * NW: class 9  (heather)
+    * NE: class 11 (bog) — the load-bearing wet-ground entry
+    * SW: class 12 (inland rock)
+    * SE: class 14 (freshwater)
+
+    Same transform / CRS as ``synthetic_dem_path`` so the pair can be
+    fed into ``run_model`` without reprojection drift.
+    """
+    n = 256
+    cell = 1.0
+    classes = np.full((n, n), 255, dtype=np.uint8)
+    half = n // 2
+    classes[:half, :half] = 9
+    classes[:half, half:] = 11
+    classes[half:, :half] = 12
+    classes[half:, half:] = 14
+    nodata = 255  # outside the 1..21 UKCEH range
+
+    path = tmp_path / "synthetic_lcm.tif"
+    transform = from_origin(400000.0, 450000.0, cell, cell)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=n,
+        width=n,
+        count=1,
+        dtype="uint8",
+        crs=CRS.from_epsg(27700),
+        transform=transform,
+        nodata=nodata,
+    ) as dst:
+        dst.write(classes, 1)
+    return path
+
+
+@pytest.fixture
 def wild_boar_fell_fixture_path() -> Path:
     """Path to the 256×256 1 m DTM fixture over Wild Boar Fell's east edge.
 

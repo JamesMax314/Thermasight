@@ -1,6 +1,9 @@
 # Roadmap
 
-**Current phase: Phase 4 — land cover + time-of-day.**
+**Current phase: Phase 4 — land cover + time-of-day.** UKCEH land
+cover wiring landed 2026-05-10 (see Phase 4 § Land cover, below).
+Mallerstang re-render against the WMS-fetched LCM is the validation
+follow-up; production 21-class α LUT is operator-authored TBD.
 
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
@@ -606,7 +609,93 @@ unrelated to this change).
 
 ## Phase 4 — Land cover + time-of-day
 
-- [ ] UKCEH land cover ingestion + absorptivity table.
+- [x] UKCEH land cover ingestion + absorptivity table
+  **(wired 2026-05-10 on branch `feat/phase4-land-cover-heating`).**
+  * `thermal_model/io/land_cover.py` — `LandCover` dataclass mirroring
+    `DEM`; `read_land_cover` + `absorptivity_from_land_cover`. Reproject
+    via `rasterio.warp.reproject` with `Resampling.nearest` (categorical
+    data — bilinear would invent class codes), vectorised 256-entry
+    LUT lookup, no per-cell loops. LCM nodata cells fall back to
+    `unknown_fill` (default `DEFAULT_ABSORPTIVITY = 0.80`), **not** to
+    NaN — a sliver of unclassified land must not zero the heating
+    weight that feeds the leaky-bucket routing. DEM-NaN cells propagate
+    to NaN α (so the routing's NaN-handling stays load-bearing).
+  * `thermal_model/io/land_cover_wms.py` — `fetch_lcm_for_dem(dem)`
+    issues a single `GetMap` against
+    `LC.10m.GB` on the public UKCEH WMS spanning the DEM footprint at
+    10 m in EPSG:27700, decodes the PNG, and reverse-maps RGB → class
+    via the hardcoded `UKCEH_LCM_PALETTE` (sampled from the live
+    `GetLegendGraphic` 2026-05-10). On-disk cache under
+    `data/cache/lcm/<layer>/<sha1>.png` keyed by canonical URL.
+    Stdlib `urllib.request` only — no new conda deps. Oversize bbox
+    (> 2048 px at 10 m) raises `NotImplementedError`; chunked WMS
+    fetch is follow-up scope. Two coastal palette collisions in the
+    WMS rendering (15↔16, 17↔18) are documented and resolved to the
+    rock-side class; they don't appear in inland Yorkshire work.
+  * **Production `UKCEH_LCM_ABSORPTIVITY` is deliberately empty** —
+    operator authors the full 21-class α table. Until then, every
+    class falls through to `DEFAULT_ABSORPTIVITY` (= scalar-α run
+    behaviour, the safe default). `DALES_LCM_ABSORPTIVITY` ships a
+    minimal 8-class Dales-focused LUT for tests and the validation
+    render (heather, bog, rock, grass, freshwater, urban, suburban).
+  * CLI: `--land-cover PATH` and `--land-cover-wms` on both `run` and
+    `preview`, in an `add_mutually_exclusive_group` with
+    `--absorptivity`. Sibling flags `--lcm-layer` (default
+    `LC.10m.GB`) and `--no-lcm-cache`. `_resolve_heating_args` in
+    `cli.py` widens its `absorptivity` kwarg contract from `float`
+    to `float | np.ndarray`; `run_model` and `heating_field` already
+    accept either (Phase 2 ROADMAP), so no further plumbing changes
+    were needed downstream.
+  * Viz: `plot_absorptivity` (continuous α overlay on hillshade) and
+    `plot_land_cover` (categorical view with `ListedColormap` +
+    `BoundaryNorm`, optional class-name legend). Re-exported from
+    `thermal_model.viz`. The existing `plot_heating` /
+    `plot_trigger_potential` / `plot_weighted_convergence` /
+    `plot_leak` / `plot_cycle_period` plotters widened their
+    `absorptivity` type hint to `float | np.ndarray` for consistency
+    with the CLI plumbing.
+  * Fixtures: `data/fixtures/wild_boar_fell_east_256_lcm.tif` (256×256
+    uint8 categorical, EPSG:27700, transform-aligned with the existing
+    DEM fixture; six classes including a class-99 unknown sliver) plus
+    a `synthetic_lcm_path` 4-quadrant fixture in `tests/conftest.py`.
+    Build script `tools/build_lcm_fixture.py` regenerates the
+    Wild Boar Fell tile from the DEM fixture's transform.
+  * Tests:
+    * `tests/test_io_land_cover.py` — 14 tests covering round-trip,
+      nearest-neighbour resampling correctness across cell-size
+      changes, CRS mismatch warning, NaN propagation from the DEM,
+      LCM-nodata fallback (the load-bearing routing-preservation
+      contract), unknown-class fallback + warning, lookup / fill
+      overrides, the empty production LUT regression guard, and the
+      `LandCover.shape` property.
+    * `tests/test_io_land_cover_wms.py` — 7 tests with mocked
+      `urllib.request.urlopen`: palette-encoded PNG round-trip,
+      off-palette pixels → `-1` + warning, GetMap URL construction,
+      cache hit / no-cache plumbing, oversize-bbox
+      `NotImplementedError`, missing-CRS guard.
+    * `tests/test_physics_pipeline.py::test_uniform_array_alpha_matches_scalar_alpha_cell_for_cell`
+      — **the strongest Phase 4 gate**: a uniform α-array produces
+      cell-for-cell identical `RunResult.leak`,
+      `RunResult.trigger_potential`, and `RunResult.heating_wm2` to a
+      scalar α of the same value. Catches any silent broadcasting or
+      NaN-substitution drift in the array plumbing.
+    * `tests/test_cli.py` — 5 new tests: local-file
+      `preview --what heating --land-cover`, full
+      `run --land-cover` writing a trigger GeoTIFF, two
+      mutual-exclusion smoke tests (exit code 2), and a
+      monkeypatched-WMS `preview --land-cover-wms` end-to-end test.
+    * `tests/test_viz.py` — 4 new smoke tests for `plot_absorptivity`
+      (incl. NaN propagation) and `plot_land_cover` (shape-mismatch
+      guard included).
+  * Validation render: see `outputs/mallerstang_phase4_render.py` (a
+    standalone script mirroring the Phase 3.1
+    `outputs/mallerstang_leaky_render.py` pattern). Drives
+    `fetch_lcm_for_dem` against the Mallerstang DEM and renders the
+    α / categorical / leak / side-by-side panels under the canonical
+    SW-summer-afternoon conditions. The Mallerstang re-render against
+    real UKCEH data is the validation follow-up to this branch; once
+    a Mallerstang DEM is on disk the operator runs the script and the
+    closure stats / visual gate land in `docs/VALIDATION.md`.
 - [ ] Time-of-day weighting between heating and convergence.
 - [ ] CLI flags for land cover and time-window sweeps.
 

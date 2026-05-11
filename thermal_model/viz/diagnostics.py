@@ -335,7 +335,7 @@ def plot_heating(
     ax: Axes | None = None,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
-    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     cmap: str | Colormap = "inferno",
     alpha: float = 0.7,
     title: str | None = None,
@@ -472,7 +472,7 @@ def plot_trigger_potential(
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
-    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
     resolve_flats: bool = True,
@@ -545,7 +545,7 @@ def plot_weighted_convergence(
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
     min_slope_deg: float = 2.5,
-    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
     resolve_flats: bool = True,
@@ -623,7 +623,7 @@ def plot_leak(
     q_ref: float = 1.0e6,
     f_min: float = 0.15,
     f_max: float = 1.0,
-    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
     resolve_flats: bool = True,
@@ -715,7 +715,7 @@ def plot_cycle_period(
     q_ref: float = 1.0e6,
     f_min: float = 0.15,
     f_max: float = 1.0,
-    absorptivity: float = DEFAULT_ABSORPTIVITY,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
     linke_turbidity: float = 3.0,
     resolve_flats: bool = True,
@@ -839,3 +839,147 @@ def plot_profile_curvature(
         label="profile curvature (1/m)",
         title=title,
     )
+
+
+def plot_absorptivity(
+    dem: np.ndarray,
+    absorptivity: np.ndarray,
+    cell_size_m: float,
+    *,
+    ax: Axes | None = None,
+    cmap: str | Colormap = "viridis",
+    alpha: float = 0.7,
+    title: str = "Surface absorptivity α (1 - albedo)",
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Per-cell absorptivity ``α`` overlaid on a hillshade backdrop.
+
+    Diagnostic for the Phase 4 land-cover pipeline. The α array comes
+    from :func:`thermal_model.io.absorptivity_from_land_cover` (or any
+    other per-cell source) and is plotted on the fixed ``[0, 1]`` range
+    so absolute values are comparable between tiles.
+
+    Parameters
+    ----------
+    dem : np.ndarray
+        Hillshade backdrop.
+    absorptivity : np.ndarray
+        Per-cell α in ``[0, 1]``; same shape as ``dem``. NaN cells render
+        transparent.
+    cell_size_m : float
+        Square cell size in metres.
+    """
+    return plot_overlay(
+        dem,
+        absorptivity,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        vmin=0.0,
+        vmax=1.0,
+        alpha=alpha,
+        label="absorptivity α",
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
+def plot_land_cover(
+    dem: np.ndarray,
+    classes: np.ndarray,
+    cell_size_m: float,
+    *,
+    ax: Axes | None = None,
+    class_names: dict[int, str] | None = None,
+    alpha: float = 0.6,
+    title: str = "Land cover classes",
+) -> Axes:
+    """Categorical land-cover overlay on a hillshade backdrop.
+
+    Each unique class code in ``classes`` is rendered as a discrete
+    colour from a tab20 colormap. Sentinel ``-1`` (LCM nodata) and any
+    other negative codes render transparent.
+
+    Parameters
+    ----------
+    dem : np.ndarray
+        Hillshade backdrop.
+    classes : np.ndarray
+        Integer-coded class raster; same shape as ``dem``.
+    cell_size_m : float
+        Square cell size in metres.
+    class_names : dict[int, str], optional
+        Mapping from class code to label for the legend; absent codes
+        are labelled by their integer code only.
+    """
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+
+    if dem.shape != classes.shape:
+        raise ValueError(
+            f"dem and classes must have the same shape, "
+            f"got {dem.shape} vs {classes.shape}"
+        )
+    ax = _ensure_axes(ax)
+    rows, cols = dem.shape
+    width_m = cols * cell_size_m
+    height_m = rows * cell_size_m
+    extent = (0.0, width_m, height_m, 0.0)
+
+    shade = hillshade(dem, cell_size_m)
+    ax.imshow(
+        shade,
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        interpolation="nearest",
+        extent=extent,
+    )
+
+    # Discrete colour mapping. Mask negative sentinels so they render
+    # transparent against the hillshade.
+    valid = classes >= 0
+    codes = sorted(int(c) for c in np.unique(classes[valid]).tolist())
+    if not codes:
+        if title:
+            ax.set_title(title)
+        ax.set_xlabel("x (m)")
+        ax.set_ylabel("y (m)")
+        return ax
+
+    palette = plt.get_cmap("tab20", max(len(codes), 1))
+    listed = ListedColormap([palette(i) for i in range(len(codes))])
+    code_to_idx = {code: i for i, code in enumerate(codes)}
+
+    rendered = np.full(classes.shape, np.nan, dtype=np.float64)
+    for code, idx in code_to_idx.items():
+        rendered[classes == code] = idx
+
+    bounds = list(range(len(codes) + 1))
+    norm = BoundaryNorm(bounds, listed.N)
+    im = ax.imshow(
+        rendered,
+        cmap=listed,
+        norm=norm,
+        alpha=alpha,
+        interpolation="nearest",
+        extent=extent,
+    )
+
+    # Discrete colorbar with tick labels.
+    cbar = ax.figure.colorbar(
+        im, ax=ax, fraction=0.046, pad=0.04, ticks=[i + 0.5 for i in range(len(codes))]
+    )
+    if class_names:
+        labels = [f"{code} {class_names.get(code, '')}".strip() for code in codes]
+    else:
+        labels = [str(code) for code in codes]
+    cbar.ax.set_yticklabels(labels)
+    cbar.set_label("class")
+
+    if title:
+        ax.set_title(title)
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    return ax

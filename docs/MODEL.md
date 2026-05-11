@@ -169,9 +169,15 @@ $$
 * $I_{\text{beam}}$, $I_{\text{diffuse}}$ — slope-projected direct
   and isotropic-diffuse irradiance from `pvlib`'s clear-sky model
   (Ineichen-Perez, default Linke turbidity 3.0).
-* $\alpha$ — surface absorptivity (1 − albedo), looked up from land
-  cover if available (`docs/DATA.md`); else a single Phase-2 default
-  (0.80 — dry grass / heather upland Dales surface).
+* $\alpha$ — surface absorptivity (1 − albedo). May be a scalar
+  (Phase 2 default — 0.80, dry grass / heather upland Dales) or a
+  per-cell array driven by the UKCEH LCM (Phase 4, wired 2026-05-10:
+  `--land-cover PATH` or `--land-cover-wms` on the CLI; see
+  `thermal_model.io.land_cover` and `docs/DATA.md` § "UKCEH LCM
+  class-code mapping"). The array path enters the pipeline as the
+  per-cell weight on the leaky-bucket flow accumulation in §11, so
+  bog patches that absorb energy into evaporation correctly inject
+  less buoyancy into the routing than dry grass at the same insolation.
 * $s \in \{0, 1\}$ — cast-shadow mask from a horizon scan along the
   solar azimuth. Multiplies the beam component only; diffuse comes
   from the whole sky and is not blocked by a single upwind ridge.

@@ -307,3 +307,167 @@ def test_mosaic_cli_overwrite_flag_works(
         ]
     )
     assert rc == 0
+
+
+def test_preview_heating_with_local_land_cover(
+    synthetic_dem_path: Path, synthetic_lcm_path: Path, tmp_path: Path
+) -> None:
+    """preview --what heating --land-cover PATH renders successfully."""
+    out = tmp_path / "heating_with_lcm.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            "heating",
+            "--land-cover",
+            str(synthetic_lcm_path),
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_run_with_local_land_cover_writes_trigger(
+    synthetic_dem_path: Path, synthetic_lcm_path: Path, tmp_path: Path
+) -> None:
+    """run --land-cover PATH passes a per-cell α array through the pipeline."""
+    trigger_out = tmp_path / "trigger.tif"
+    rc = main(
+        [
+            "run",
+            "--dem",
+            str(synthetic_dem_path),
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--wind-from",
+            "225",
+            "--wind-speed",
+            "5",
+            "--no-resolve-flats",
+            "--land-cover",
+            str(synthetic_lcm_path),
+            "--out",
+            str(trigger_out),
+        ]
+    )
+    assert rc == 0
+    assert trigger_out.exists() and trigger_out.stat().st_size > 0
+
+
+def test_run_rejects_absorptivity_and_land_cover_together(
+    synthetic_dem_path: Path, synthetic_lcm_path: Path, tmp_path: Path
+) -> None:
+    """argparse mutual exclusion enforces one absorptivity source."""
+    out = tmp_path / "trigger.tif"
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "run",
+                "--dem",
+                str(synthetic_dem_path),
+                "--datetime",
+                "2026-06-21T12:00:00+01:00",
+                "--wind-from",
+                "225",
+                "--wind-speed",
+                "5",
+                "--absorptivity",
+                "0.7",
+                "--land-cover",
+                str(synthetic_lcm_path),
+                "--out",
+                str(out),
+            ]
+        )
+    assert excinfo.value.code == 2
+
+
+def test_run_rejects_land_cover_and_wms_together(
+    synthetic_dem_path: Path, synthetic_lcm_path: Path, tmp_path: Path
+) -> None:
+    """--land-cover and --land-cover-wms are also mutually exclusive."""
+    out = tmp_path / "trigger.tif"
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "run",
+                "--dem",
+                str(synthetic_dem_path),
+                "--datetime",
+                "2026-06-21T12:00:00+01:00",
+                "--wind-from",
+                "225",
+                "--wind-speed",
+                "5",
+                "--land-cover",
+                str(synthetic_lcm_path),
+                "--land-cover-wms",
+                "--out",
+                str(out),
+            ]
+        )
+    assert excinfo.value.code == 2
+
+
+def test_preview_heating_with_land_cover_wms_mocked(
+    synthetic_dem_path: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """preview --what heating --land-cover-wms calls fetch_lcm_for_dem.
+
+    Monkeypatches the fetch to a synthetic LandCover so the test is hermetic
+    (no real network) but exercises the full CLI plumbing path.
+    """
+    import numpy as np
+    from rasterio.crs import CRS
+
+    from thermal_model.io import DEM, LandCover
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(reference: DEM, **kwargs):  # type: ignore[no-untyped-def]
+        captured["called"] = True
+        captured["layer"] = kwargs.get("layer")
+        captured["use_cache"] = kwargs.get("use_cache")
+        # Return a uniform-bog LCM covering the DEM footprint.
+        rows, cols = reference.shape
+        return LandCover(
+            classes=np.full((rows, cols), 11, dtype=np.int16),
+            transform=reference.transform,
+            crs=CRS.from_epsg(27700),
+            cell_size_m=reference.cell_size_m,
+        )
+
+    monkeypatch.setattr(
+        "thermal_model.cli.fetch_lcm_for_dem", fake_fetch, raising=False
+    )
+    # The CLI imports `fetch_lcm_for_dem` lazily from `thermal_model.io`
+    # inside `_resolve_heating_args`; patch there instead.
+    monkeypatch.setattr("thermal_model.io.fetch_lcm_for_dem", fake_fetch, raising=True)
+
+    out = tmp_path / "heating_wms.png"
+    rc = main(
+        [
+            "preview",
+            "--dem",
+            str(synthetic_dem_path),
+            "--what",
+            "heating",
+            "--land-cover-wms",
+            "--no-lcm-cache",
+            "--datetime",
+            "2026-06-21T12:00:00+01:00",
+            "--save",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    assert out.exists()
+    assert captured.get("called") is True
+    assert captured.get("layer") == "LC.10m.GB"
+    assert captured.get("use_cache") is False

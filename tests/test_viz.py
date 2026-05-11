@@ -355,3 +355,76 @@ def test_plot_cycle_period_rejects_invalid_log_bounds() -> None:
             vmax_s=3600.0,
             resolve_flats=False,
         )
+
+
+def test_plot_absorptivity_smoke() -> None:
+    """plot_absorptivity renders without exception."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from thermal_model.viz import plot_absorptivity
+
+    n = 32
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float64)
+    dem = 400.0 + 0.1 * (xx + yy)
+    alpha = np.full((n, n), 0.8)
+    alpha[: n // 2] = 0.4  # half bog, half grass
+    fig, ax = plt.subplots()
+    plot_absorptivity(dem, alpha, cell_size_m=1.0, ax=ax)
+    plt.close(fig)
+
+
+def test_plot_absorptivity_nan_propagates() -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from thermal_model.viz import plot_absorptivity
+
+    n = 16
+    dem = np.full((n, n), 400.0)
+    alpha = np.full((n, n), 0.8)
+    alpha[0, 0] = np.nan
+    fig, ax = plt.subplots()
+    plot_absorptivity(dem, alpha, cell_size_m=1.0, ax=ax)
+    plt.close(fig)
+
+
+def test_plot_land_cover_smoke() -> None:
+    """plot_land_cover renders the categorical overlay without exception."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from thermal_model.viz import plot_land_cover
+
+    n = 32
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float64)
+    dem = 400.0 + 0.1 * (xx + yy)
+    classes = np.full((n, n), 9, dtype=np.int16)
+    classes[: n // 2, : n // 2] = 11
+    classes[n // 2 :, n // 2 :] = 12
+    classes[0, 0] = -1  # sentinel, should render transparent
+
+    fig, ax = plt.subplots()
+    plot_land_cover(
+        dem,
+        classes,
+        cell_size_m=1.0,
+        ax=ax,
+        class_names={9: "heather", 11: "bog", 12: "rock"},
+    )
+    plt.close(fig)
+
+
+def test_plot_land_cover_rejects_shape_mismatch() -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pytest
+
+    from thermal_model.viz import plot_land_cover
+
+    dem = np.zeros((10, 10))
+    classes = np.zeros((8, 10), dtype=np.int16)
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError, match="shape"):
+        plot_land_cover(dem, classes, cell_size_m=1.0, ax=ax)
+    plt.close(fig)
