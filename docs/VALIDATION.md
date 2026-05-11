@@ -190,3 +190,99 @@ the Stage 2 gate criteria (Mallerstang Edge dominant, Wild Boar
 Fell summit interior dim, NE lee enhancement) are independent of
 the new pre-smooth knob. A follow-up render under the new default
 is on the Phase 4 calibration sweep agenda.
+
+### 2026-05-11 — Phase 3.2 drafting / leak aggregation
+
+Same 15 km × 20 km Wild Boar Fell + Mallerstang mosaic
+(`data/processed/mallerstang_wildboar_1m.tif`), 5 m resampled,
+re-rendered with the new `draft_aggregation_sigma_m` knob via
+`outputs/mallerstang_draft_render.py`. Two passes: σ_draft = 0
+(reproduces the Phase 3.1 baseline trigger raster) and σ_draft = 75 m
+(the new production default). All other parameters at the Stage 3
+defaults (smoothing 10 m, curvature smoothing 10 m, resolve_flats on,
+leak shape defaults). Conditions matched to the Phase 3.1 visual gate
+exactly:
+
+* **Date/time**: 2026-07-15 13:00 BST.
+* **Wind**: from 225° at 6 m/s.
+
+Each pass takes ~37 s on a Macbook (numba JIT leaky kernel + the new
+post-kernel Gaussian smooth).
+
+#### Headline numbers
+
+| Metric | σ_draft = 0 (baseline) | σ_draft = 75 m (production) |
+|---|---|---|
+| `Σ heating` | 7.942 × 10⁹ | 7.942 × 10⁹ |
+| `Σ leak / Σ heating` | 97.7 % | 97.7 % |
+| `residual_at_sinks_total` | 1.85 × 10⁸ | 1.85 × 10⁸ |
+| `Σ draft_potential / Σ heating` | 97.7 % | 92.0 % |
+| `draft_mask_loss_total / Σ leak` | 0.00 % | 5.81 % |
+| Clusters at q95, min_cells=3 | 9560 | **371** |
+| Median cluster τ | 54 s | 102 s |
+| `\|leak_σ=0 − leak_σ=75\|.sum()` | 0.000 | 0.000 |
+
+The σ=0 / σ=75 passes produce **bit-exact** `leak` fields, confirming
+the aggregation is purely post-kernel and the conservation invariant on
+the underlying physical field is preserved. The 5.81 % mask loss is the
+energy thrown away by the post-smooth slope mask zeroing bleed onto
+flat plateaus — well below the 10 %-ish threshold I'd worry at, so the
+aggregation is physically defensible at σ = 75 m on this terrain.
+
+#### Cluster collapse — the headline result
+
+9560 → 371 clusters. The predecessor was rank-normalising cell-level
+`leak`, so the q95 threshold caught a few thousand cell-level peaks
+(many of them isolated LIDAR-curvature artefacts and single-cell scarp
+lips). The aggregated `draft_potential` field merges these into
+coherent thermal-scale features — and the diffuse-spur clusters that
+the predecessor lost to single-cell ranking now reach the trigger
+raster.
+
+Median cluster τ doubles (54 s → 102 s), reflecting the
+cyclic-dump-regime spur clusters surfacing alongside the
+consistent-trigger-regime scarp clusters that the predecessor saw
+exclusively. This is the bimodal physics the Phase 3.1 reformulation
+introduced, finally reaching the deliverable layer.
+
+#### Visual gate, item by item
+
+| Phase 3.1 gate criterion | σ_draft = 0 | σ_draft = 75 m |
+|---|---|---|
+| SW flanks of Wild Boar Fell bright | ✓ (per Phase 3.1 log) | ✓ broader, more coherent |
+| Mallerstang Edge cliff line lit | ✓ | ✓ still the dominant linear feature |
+| NE lee-side enhancement vs zero-wind | ✓ | ✓ (wind tilt unchanged) |
+| Summit plateau interior dim | ✓ | ✓ (slope mask reapplied post-smooth) |
+| Cycle-period contrast cliff vs ridge | ✓ | ✓ (cycle period not aggregated) |
+| **Diffuse spur shoulders survive q95** | ✗ | **✓ (the Phase 3.2 fix)** |
+
+The Δ-trigger panel (σ=75 − σ=0, RdBu_r) shows the rescue-the-spur
+effect spatially: red zones (rescued) over broad spur shoulders and
+slope faces, blue zones (demoted) over the isolated cell-level peaks
+that the predecessor over-rewarded. The two effects cancel cleanly —
+this is a redistribution of trigger emphasis from cells to thermal-
+scale features, not a uniform rescale.
+
+#### Output artefacts (gitignored under `outputs/`)
+
+* `mallerstang_draft_compare_5m.png` — 6-panel side-by-side:
+  * Row 0: σ=0 trigger raster | σ=75 trigger raster | Δ trigger.
+  * Row 1: σ=0 leak (W/m²) | σ=75 `draft_potential` (W/m²) |
+    σ=75 cycle period τ (s, log).
+
+#### Caveat
+
+This is a single-area qualitative clearance, matched 1:1 against the
+Phase 3.1 baseline. The σ = 75 m default was chosen from physical
+reasoning (≈ one thermal column radius at low trigger altitude) and
+survives this contact with real LIDAR; a formal sensitivity sweep
+across σ ∈ {0, 25, 50, 75, 100, 150} m is the natural follow-up to
+confirm the default empirically. Operator-led calibration against
+`docs/VALIDATION.md` known-trigger locations is also outstanding —
+the cluster count change (9560 → 371) suggests the q95 + min_cells=3
+defaults are now closer to "actual thermal columns" than they were
+before drafting, which may justify revisiting the threshold.
+
+**Phase 3.2 visual gate cleared on this single-tile render.**
+Sensitivity sweep + ground-truth comparison deferred to the Phase 4
+calibration agenda.
