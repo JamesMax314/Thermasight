@@ -50,6 +50,9 @@ notebooks/*
 !notebooks/templates/
 !notebooks/.gitkeep
 
+# Generated API documentation (rebuilt via `make docs`).
+docs/api/
+
 # Conda / venv
 .env
 .venv/

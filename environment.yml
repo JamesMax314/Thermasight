@@ -29,6 +29,9 @@ dependencies:
   - hypothesis
   - ruff
   - mypy
+  # API documentation generator. Renders the package's NumPy-style
+  # docstrings to a static HTML site via `make docs`.
+  - pdoc
   - pip
   - pip:
       # Editable install of this package.
