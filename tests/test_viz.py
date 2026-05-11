@@ -15,6 +15,7 @@ from thermal_model.viz import (
     plot_aspect,
     plot_convergence,
     plot_cycle_period,
+    plot_draft_potential,
     plot_heating,
     plot_leak,
     plot_overlay,
@@ -312,6 +313,28 @@ def test_plot_leak_smoke() -> None:
         resolve_flats=False,
     )
     # Hillshade + leak overlay = 2 images.
+    assert len(ax.images) == 2
+    plt.close(ax.figure)
+
+
+def test_plot_draft_potential_smoke() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    dem = _gaussian_hill(32, height=60.0)
+    when = datetime(2026, 6, 21, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    ax = plot_draft_potential(
+        dem,
+        cell_size_m=5.0,
+        when=when,
+        latitude_deg=54.2,
+        longitude_deg=-2.3,
+        wind_from_deg=225.0,
+        wind_speed_ms=5.0,
+        draft_aggregation_sigma_m=30.0,
+        resolve_flats=False,
+    )
+    # Hillshade + draft overlay = 2 images.
     assert len(ax.images) == 2
     plt.close(ax.figure)
 

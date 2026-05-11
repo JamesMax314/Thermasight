@@ -5,6 +5,13 @@ cover wiring landed 2026-05-10 (see Phase 4 § Land cover, below).
 Mallerstang re-render against the WMS-fetched LCM is the validation
 follow-up; production 21-class α LUT is operator-authored TBD.
 
+Phase 3.2 (drafting / aggregation, 2026-05-11) landed in parallel —
+a post-kernel Gaussian smooth of the `leak` field with the slope
+mask reapplied, exposed on `RunResult.draft_potential` and driving
+`trigger_potential` and clustering. Default σ = 75 m. Rescues
+diffuse spur clusters that the cell-level rank-of-leak threshold
+would lose; see Phase 3.2 below.
+
 Phase 2 (solar + heating) closed 2026-05-07. Phase 3 was reformulated
 on the same date — the original "wind drift" framing was superseded
 by the ground-level trigger-prediction model in
@@ -606,6 +613,88 @@ holds; energy closure preserved (98.7 % leak / 1.3 % residual on the
 canonical SW render); test suite green (294 passed; 1 pre-existing
 hypothesis-property failure in `test_aspect_rotates_under_rot90`
 unrelated to this change).
+
+## Phase 3.2 — Drafting / leak aggregation (2026-05-11)
+
+The Phase 3.1 leaky kernel routes heating energy correctly but the
+downstream display layer was rank-normalising the cell-level `leak`
+field and clustering at $q_{95}$, which penalised diffuse spurs
+relative to concentrated scarp lips. The `cycle_period_s` field
+showed the spurs working; the trigger raster and KMZ did not. See
+`docs/TODO.md` "Drafting" for the motivating diagnosis.
+
+Physically, rising buoyant plumes coalesce as they ascend; a pilot
+at trigger height samples a ground footprint several thermal-column
+radii across. Treating cell-level leak as the trigger granularity
+is the wrong scale.
+
+- [x] `physics/pipeline.py:run_model` — added
+  `draft_aggregation_sigma_m` kwarg (default 75 m, ≈ one thermal
+  column radius at low trigger altitude). After the leaky kernel
+  call, smooth `leak` with the existing NaN-aware
+  `_gaussian_smooth_nan` helper at the requested σ, then reapply
+  the slope mask (using the same `min_slope_rad` the kernel uses
+  for `f_drain`/`q_storage`, so the mask is consistent with kernel
+  behaviour). σ = 0 reproduces the predecessor `trigger_potential
+  = rank_normalise(leak)` cell-for-cell.
+- [x] `RunResult` — new fields `draft_potential` (W/m², the
+  aggregated field) and `draft_mask_loss_total` (scalar diagnostic
+  for energy thrown away by the post-smooth slope mask).
+  `trigger_potential` is redefined as
+  `rank_normalise(draft_potential)`. `leak` and
+  `residual_at_sinks_total` are unchanged — the conservation
+  invariant on the underlying physical field is preserved.
+- [x] `triggers/cluster.py:cluster_triggers` — new optional
+  `leak_weights` kwarg. When supplied alongside `cycle_period_s`,
+  per-cluster cycle period switches from arithmetic mean of τ to
+  the leak-weighted mean
+  `Σᵢ leakᵢ·τᵢ / Σᵢ leakᵢ` over cluster cells with finite τ and
+  positive leak — "the dominant cycle of the cells actually
+  producing this thermal", which is the right per-thermal summary
+  now that smoothed clusters can span many low-leak cells. Without
+  `leak_weights` the legacy arithmetic-mean path stays in place.
+- [x] CLI: `--draft-aggregation-sigma` (m, default 75) on `run` and
+  `preview`. New `preview --what draft` choice. `_cmd_run` now
+  clusters on `RunResult.draft_potential` with
+  `leak_weights=RunResult.leak` so the KMZ inherits both the
+  rescue-the-spur benefit and the physically-meaningful per-cluster
+  τ.
+- [x] `viz/`: new `plot_draft_potential` plotter modelled on
+  `plot_leak`. The four wind-requiring plotters
+  (`plot_trigger_potential`, `plot_weighted_convergence`,
+  `plot_leak`, `plot_cycle_period`) all gained the new σ kwarg and
+  forward it to `run_model`. Re-exported from
+  `thermal_model.viz.__init__`.
+- [x] Tests: σ=0 collapses `draft_potential` to `leak` exactly;
+  diffuse-vs-concentrated 64×64 toy gives near-equal centre rank
+  (the TODO.md 3×3 toy generalised); plateau-with-rim fixture
+  asserts the post-smooth slope mask zeros plateau-interior bleed
+  while preserving rim leak; energy conservation on `leak`
+  unchanged at σ=75. Cluster: leak-weighted mean asserted on a
+  hand-built 3-cell cluster (leak ∈ {10, 90, 50}, τ ∈ {60, 600,
+  300} s) — leak-weighted mean = 464 s, arithmetic mean = 320 s,
+  the two paths verifiably disagree. Plus an explicit
+  zero-weight-cell exclusion guard. CLI smoke for
+  `--draft-aggregation-sigma` and `preview --what draft`. Viz
+  smoke for `plot_draft_potential`. **All twelve new tests pass.**
+- [x] `docs/MODEL.md` — added §11.9 documenting the aggregation
+  step.
+
+**Phase 3.2 gate (code-side, cleared 2026-05-11)**: 333 passed,
+1 pre-existing hypothesis failure in
+`test_aspect_rotates_under_rot90` unrelated to this branch; ruff /
+format / mypy clean. **Visual gate**: Mallerstang re-render at 5 m
+under canonical SW summer afternoon conditions (225° @ 6 m/s,
+2026-07-15 13:00 BST) is the operator follow-up — expectations:
+SW spur shoulders appear as broad bright zones on `draft_potential`
+where `leak` shows them faint; Mallerstang Edge cliff line still
+dominates (we're not handicapping scarps, only rescuing spurs);
+Wild Boar Fell summit-plateau interior remains dim
+(slope mask working); new spur clusters survive q95 thresholding
+and reach the KMZ with leak-weighted cycle periods longer than the
+existing scarp-lip clusters. Sensitivity sweep at σ ∈ {0, 25, 50,
+75, 100, 150} m to confirm 75 m default. Write up in
+`docs/VALIDATION.md`.
 
 ## Phase 4 — Land cover + time-of-day
 

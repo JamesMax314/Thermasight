@@ -92,7 +92,21 @@ class RunResult:
         Float64, W/m² (when heating drives the weights). The per-cell
         time-averaged trigger-release rate from the leaky-bucket
         accumulation. Absolute units, useful for cross-tile comparison.
-        NaN at NaN-DEM cells.
+        NaN at NaN-DEM cells. The conservation-exact physical field:
+        ``Σ leak + residual_at_sinks_total ≡ Σ heating``.
+    draft_potential : np.ndarray
+        Float64, W/m². A Gaussian-aggregated view of :attr:`leak` at a
+        thermal-merging scale (default σ = 75 m), with a post-smooth
+        slope mask reapplied so flat plateaus and valley floors stay
+        at ``0``. Models the fact that rising buoyant plumes coalesce
+        as they rise — a diffuse spur leaking 1 W/m² over many cells
+        produces a thermal as flyable as a scarp leaking 100 W/m² in
+        one cell, provided the total power is comparable. This is the
+        field clustering and the rank-normalised
+        :attr:`trigger_potential` are derived from when
+        ``draft_aggregation_sigma_m > 0``; with ``= 0`` it collapses
+        to :attr:`leak` (subject to the same slope mask). NaN at
+        NaN-DEM cells.
     forward : np.ndarray
         Float64, W/m². The post-leak through-flow that was passed to
         the D∞ neighbours. ``leak + forward`` is the pre-leak
@@ -111,6 +125,16 @@ class RunResult:
         injected weight ending up here means ``f_drain`` is too high
         (or ``q_storage`` too high) and triggers are being
         under-counted.
+    draft_mask_loss_total : float
+        Total leak (W/m² × cells) discarded by the post-smooth slope
+        mask on :attr:`draft_potential`. Gaussian aggregation spreads
+        rim / scarp leak onto adjacent flat plateaus; the slope mask
+        zeros those cells so the Phase 3.1 "summit interior dim" gate
+        holds. The energy thrown away is logged here as a diagnostic
+        — it should be a small fraction of ``Σ leak`` for the
+        aggregation to be physically meaningful. ``0.0`` when
+        ``draft_aggregation_sigma_m == 0`` (no aggregation, no
+        bleed).
     weighted_convergence : np.ndarray
         Float64, ``leak + forward``. The pre-leak through-flow at
         each cell — the heating-weighted D∞ accumulation that the
@@ -135,9 +159,11 @@ class RunResult:
 
     trigger_potential: np.ndarray
     leak: np.ndarray
+    draft_potential: np.ndarray
     forward: np.ndarray
     cycle_period_s: np.ndarray
     residual_at_sinks_total: float
+    draft_mask_loss_total: float
     weighted_convergence: np.ndarray
     heating_wm2: np.ndarray
     smoothed_dem_m: np.ndarray
@@ -219,6 +245,7 @@ def run_model(
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
     min_slope_deg: float = 2.5,
     slope_scale_deg: float = 15.0,
     kappa_ref: float = 0.005,
@@ -276,6 +303,27 @@ def run_model(
         §6 ¶282–284 prescription. ``0`` disables (raw curvature
         feeds the shape functions, reproducing pre-2026-05-09
         behaviour).
+    draft_aggregation_sigma_m : float, default 75.0
+        Gaussian smoothing scale in metres applied to ``leak`` to
+        produce :attr:`RunResult.draft_potential`, the field that
+        drives :attr:`RunResult.trigger_potential` and downstream
+        clustering. Models the coalescence of buoyant plumes as they
+        rise: a diffuse spur and a concentrated scarp lip with
+        comparable total power produce thermals of comparable
+        flyability, but the predecessor's cell-level rank
+        normalisation gave the concentrated scarp an unfair advantage
+        in the percentile threshold. 75 m is roughly one thermal
+        column radius at low trigger altitude on UK terrain. The
+        Gaussian is sum-preserving so the conservation invariant on
+        the underlying ``leak`` field is unaffected; a post-smooth
+        slope mask (using ``min_slope_deg``) preserves the
+        ``summit-plateau dim`` gate by zeroing bleed onto flat
+        cells, with the energy thrown away reported on
+        :attr:`RunResult.draft_mask_loss_total`. ``0`` disables
+        aggregation: ``draft_potential`` becomes ``leak`` (with the
+        slope mask still applied) and the rank-normalised
+        ``trigger_potential`` collapses to the pre-aggregation
+        formulation.
     min_slope_deg : float, default 2.5
         Slope (degrees) below which a cell contributes nothing to
         ``sharpness`` in the leaky shape function — i.e. ``f_drain``
@@ -374,6 +422,11 @@ def run_model(
         raise ValueError(
             "curvature_smoothing_sigma_m must be non-negative, "
             f"got {curvature_smoothing_sigma_m}"
+        )
+    if draft_aggregation_sigma_m < 0:
+        raise ValueError(
+            "draft_aggregation_sigma_m must be non-negative, "
+            f"got {draft_aggregation_sigma_m}"
         )
     if pit_fill_epsilon < 0:
         raise ValueError(
@@ -493,7 +546,32 @@ def run_model(
     )
 
     weighted_conv = leaky.leak + leaky.forward  # pre-leak through-flow
-    trigger = _rank_normalise(leaky.leak)
+
+    # Drafting / aggregation step. Rising buoyant plumes coalesce, so
+    # a pilot at trigger height samples a footprint several thermal-
+    # column radii across. A diffuse spur leak and a concentrated
+    # scarp leak with comparable total power produce thermals of
+    # comparable flyability — but cell-level rank normalisation gave
+    # the scarp an unfair advantage in the percentile threshold. We
+    # Gaussian-aggregate the leak field at a thermal-merging scale,
+    # then reapply the slope mask so bleed onto flat plateaus does
+    # not reintroduce the Phase 3.1 "summit interior bright" artefact.
+    # ``_gaussian_smooth_nan`` is sum-preserving on interior cells so
+    # the conservation invariant on the underlying ``leak`` field is
+    # unaffected; the energy thrown away by the mask is reported
+    # separately as ``draft_mask_loss_total``.
+    draft_sigma_cells = draft_aggregation_sigma_m / float(cell_size_m)
+    draft_smoothed = _gaussian_smooth_nan(leaky.leak, draft_sigma_cells)
+    slope_mask = slope_for_shape > min_slope_rad
+    draft = np.where(slope_mask & ~nan_mask, draft_smoothed, 0.0)
+    draft = np.where(nan_mask, np.nan, draft)
+    # Energy lost to the post-smooth slope mask. Both arrays have the
+    # same finite-cell support so the difference is well-defined.
+    draft_mask_loss = float(
+        np.nansum(np.where(slope_mask, 0.0, np.where(nan_mask, 0.0, draft_smoothed)))
+    )
+
+    trigger = _rank_normalise(draft)
     # Restore NaN where the raw DEM was NaN — _rank_normalise already
     # writes NaN at NaN cells, but be explicit.
     trigger = np.where(nan_mask, np.nan, trigger)
@@ -501,9 +579,11 @@ def run_model(
     return RunResult(
         trigger_potential=trigger.astype(np.float64, copy=False),
         leak=leaky.leak,
+        draft_potential=draft.astype(np.float64, copy=False),
         forward=leaky.forward,
         cycle_period_s=leaky.cycle_period,
         residual_at_sinks_total=leaky.residual_at_sinks_total,
+        draft_mask_loss_total=draft_mask_loss,
         weighted_convergence=weighted_conv.astype(np.float64, copy=False),
         heating_wm2=heating.astype(np.float64, copy=False),
         smoothed_dem_m=smoothed,

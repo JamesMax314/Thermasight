@@ -471,6 +471,7 @@ def plot_trigger_potential(
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
     min_slope_deg: float = 2.5,
     absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
@@ -500,6 +501,7 @@ def plot_trigger_potential(
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
         curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        draft_aggregation_sigma_m=draft_aggregation_sigma_m,
         min_slope_deg=min_slope_deg,
         absorptivity=absorptivity,
         elevation_m=elevation_m,
@@ -544,6 +546,7 @@ def plot_weighted_convergence(
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
     min_slope_deg: float = 2.5,
     absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
     elevation_m: float | None = None,
@@ -575,6 +578,7 @@ def plot_weighted_convergence(
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
         curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        draft_aggregation_sigma_m=draft_aggregation_sigma_m,
         min_slope_deg=min_slope_deg,
         absorptivity=absorptivity,
         elevation_m=elevation_m,
@@ -617,6 +621,7 @@ def plot_leak(
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
     min_slope_deg: float = 2.5,
     slope_scale_deg: float = 15.0,
     kappa_ref: float = 0.005,
@@ -662,6 +667,7 @@ def plot_leak(
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
         curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        draft_aggregation_sigma_m=draft_aggregation_sigma_m,
         min_slope_deg=min_slope_deg,
         slope_scale_deg=slope_scale_deg,
         kappa_ref=kappa_ref,
@@ -696,6 +702,99 @@ def plot_leak(
     )
 
 
+def plot_draft_potential(
+    dem: np.ndarray,
+    cell_size_m: float,
+    when: datetime,
+    latitude_deg: float,
+    longitude_deg: float,
+    *,
+    wind_from_deg: float,
+    wind_speed_ms: float,
+    ax: Axes | None = None,
+    wind_tilt_k: float = 0.03,
+    smoothing_sigma_m: float = 10.0,
+    curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
+    min_slope_deg: float = 2.5,
+    slope_scale_deg: float = 15.0,
+    kappa_ref: float = 0.005,
+    q_ref: float = 1.0e6,
+    f_min: float = 0.15,
+    f_max: float = 1.0,
+    absorptivity: float | np.ndarray = DEFAULT_ABSORPTIVITY,
+    elevation_m: float | None = None,
+    linke_turbidity: float = 3.0,
+    resolve_flats: bool = True,
+    cmap: str | Colormap = "magma",
+    alpha: float = 0.7,
+    log: bool = True,
+    title: str | None = None,
+    contours: bool = True,
+    contour_levels: int | Sequence[float] = 10,
+) -> Axes:
+    """Gaussian-aggregated trigger leak (W/m²) overlaid on a hillshade.
+
+    Same field as :func:`plot_leak` but Gaussian-smoothed at
+    ``draft_aggregation_sigma_m`` (default 75 m) with a post-smooth
+    slope mask reapplied. Models the coalescence of buoyant plumes as
+    they rise: a diffuse spur and a concentrated scarp with comparable
+    total power produce thermals of comparable flyability, but
+    cell-level rank normalisation gave the scarp an unfair advantage
+    in the trigger percentile threshold. The aggregated view rescues
+    the spur.
+
+    See :class:`thermal_model.physics.RunResult` for the field
+    definition and :func:`thermal_model.physics.run_model` for the
+    parameter semantics.
+    """
+    result = run_model(
+        dem,
+        cell_size_m,
+        when,
+        latitude_deg,
+        longitude_deg,
+        wind_from_deg=wind_from_deg,
+        wind_speed_ms=wind_speed_ms,
+        wind_tilt_k=wind_tilt_k,
+        smoothing_sigma_m=smoothing_sigma_m,
+        curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        draft_aggregation_sigma_m=draft_aggregation_sigma_m,
+        min_slope_deg=min_slope_deg,
+        slope_scale_deg=slope_scale_deg,
+        kappa_ref=kappa_ref,
+        q_ref=q_ref,
+        f_min=f_min,
+        f_max=f_max,
+        absorptivity=absorptivity,
+        elevation_m=elevation_m,
+        linke_turbidity=linke_turbidity,
+        resolve_flats=resolve_flats,
+    )
+
+    if title is None:
+        title = (
+            f"Draft potential (W/m²) — {when.isoformat(timespec='minutes')}\n"
+            f"wind from {wind_from_deg:.0f}° @ {wind_speed_ms:.1f} m/s, "
+            f"k={wind_tilt_k}, σ_draft={draft_aggregation_sigma_m:.0f} m"
+        )
+
+    label = "draft (W/m²)" if not log else "draft (W/m², log)"
+    return plot_overlay(
+        dem,
+        result.draft_potential,
+        cell_size_m,
+        ax=ax,
+        cmap=cmap,
+        log=log,
+        alpha=alpha,
+        label=label,
+        title=title,
+        contours=contours,
+        contour_levels=contour_levels,
+    )
+
+
 def plot_cycle_period(
     dem: np.ndarray,
     cell_size_m: float,
@@ -709,6 +808,7 @@ def plot_cycle_period(
     wind_tilt_k: float = 0.03,
     smoothing_sigma_m: float = 10.0,
     curvature_smoothing_sigma_m: float = 10.0,
+    draft_aggregation_sigma_m: float = 75.0,
     min_slope_deg: float = 2.5,
     slope_scale_deg: float = 15.0,
     kappa_ref: float = 0.005,
@@ -759,6 +859,7 @@ def plot_cycle_period(
         wind_tilt_k=wind_tilt_k,
         smoothing_sigma_m=smoothing_sigma_m,
         curvature_smoothing_sigma_m=curvature_smoothing_sigma_m,
+        draft_aggregation_sigma_m=draft_aggregation_sigma_m,
         min_slope_deg=min_slope_deg,
         slope_scale_deg=slope_scale_deg,
         kappa_ref=kappa_ref,

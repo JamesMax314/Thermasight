@@ -701,3 +701,80 @@ relative to zero-wind baseline) **plus** dimming of the
 summit-plateau artefacts that motivated the reformulation, with
 plausible cycle-period contrast between the cliff lines (short)
 and the rounded ridges (long).
+
+### 11.9 Drafting / aggregation step (2026-05-11)
+
+The leaky kernel of §11.2 routes heating energy correctly: scarp
+lips dump all their through-flow in one cell, gentle spurs leak
+slowly over a wide area. But the downstream display / clustering
+pipeline through 2026-05-09 was
+$T = \mathrm{rank\_normalise}(\mathrm{leak})$, clustered at the
+$q_{95}$ of strictly-positive cells. Diffuse spur leaks then got a
+moderate rank across many cells and rarely cleared the percentile
+cut, while concentrated scarp peaks always did. The
+`cycle_period_s` field showed the spurs working; the trigger raster
+hid them.
+
+This is the wrong granularity. Rising buoyant plumes coalesce as
+they ascend; a pilot at trigger height (~100–300 m AGL) samples a
+ground footprint several thermal-column radii across. A spur
+leaking $1\ \mathrm{W/m^2}$ over $200 \times 200\ \mathrm{m}$ injects
+the same total power as a scarp lip leaking $400\ \mathrm{W/m^2}$
+over $10 \times 10\ \mathrm{m}$ — and the spur's parcel is
+typically the smoother climb. Cell-level rank normalisation
+penalises the spur for no physical reason.
+
+The production pipeline therefore aggregates `leak` at a
+thermal-merging scale before forming the trigger raster:
+
+$$
+\widetilde{\mathrm{leak}}(\mathbf{x})
+  = G_{\sigma_{\text{draft}}} \star \mathrm{leak}(\mathbf{x})
+  \cdot \mathbb{1}\!\bigl[\,\mathrm{slope}(\mathbf{x}) > \theta_{\min}\,\bigr]
+$$
+
+where $G_{\sigma}$ is a NaN-aware Gaussian smoother (the
+``_gaussian_smooth_nan`` helper that already underpins
+$\sigma_{\text{smooth}}$ and $\sigma_{\text{curv}}$) and the
+indicator factor is the same slope mask that the kernel's
+$f_{\text{drain}}$ uses. The mask is reapplied **after** the
+Gaussian so that bleed onto flat plateaus does not reintroduce the
+"summit interior bright" artefact that Phase 3.1 was created to
+remove. The energy thrown away by the mask is logged as the scalar
+`draft_mask_loss_total` on `RunResult`; it should be a small
+fraction of $\sum \mathrm{leak}$ for the aggregation to be
+physically meaningful.
+
+The Gaussian itself is sum-preserving (interior cells), so the
+conservation invariant in §11.4 on the underlying `leak` field is
+untouched:
+$\sum \mathrm{leak} + \mathrm{residual\_at\_sinks\_total}
+  \equiv \sum H$.
+The new field $\widetilde{\mathrm{leak}}$ is exposed on
+`RunResult.draft_potential` with the same W/m² semantics as
+`leak`; the rank-normalised display field
+`RunResult.trigger_potential` is redefined as
+$\mathrm{rank\_normalise}(\widetilde{\mathrm{leak}})$, and the CLI's
+clustering / KMZ path runs on `draft_potential`. The per-cluster
+cycle-period summary uses a leak-weighted mean of the *raw* per-cell
+$\tau$:
+$\bar\tau_c = \Sigma_i (\mathrm{leak}_i \cdot \tau_i)
+              / \Sigma_i \mathrm{leak}_i$
+over cluster cells with finite $\tau$ and strictly-positive
+`leak`, expressing "the dominant cycle of the cells *actually
+producing* this thermal" rather than the arithmetic mean over the
+smoothed cluster footprint.
+
+The aggregation scale $\sigma_{\text{draft}}$ is exposed as
+`draft_aggregation_sigma_m` on `run_model` and as
+`--draft-aggregation-sigma` on the CLI. Default 75 m — roughly one
+thermal column radius at low trigger altitude on UK upland terrain.
+`= 0` disables aggregation, collapsing `draft_potential` back to
+`leak` (modulo the slope mask, which is a no-op there because
+$\mathrm{leak} = 0$ already on flats).
+
+The aggregation is purely post-kernel; nothing in §11.2–§11.6
+changes. The clustering and KMZ deliverables ride on the
+aggregated field; the conservation-exact `leak` field is preserved
+for energy bookkeeping and for any downstream consumer that wants
+the cell-level physical magnitudes.

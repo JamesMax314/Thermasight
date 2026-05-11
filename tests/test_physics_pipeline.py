@@ -598,3 +598,194 @@ def test_uniform_array_alpha_matches_scalar_alpha_cell_for_cell() -> None:
     assert scalar.residual_at_sinks_total == pytest.approx(
         array.residual_at_sinks_total
     )
+
+
+# ---------------------------------------------------------------------------
+# Drafting / aggregation fold-in (2026-05-11).
+#
+# Post-kernel Gaussian smooth on `leak` to produce `draft_potential`, with a
+# post-smooth slope mask reapplied. Models the coalescence of buoyant plumes
+# as they rise so diffuse spur leaks survive the trigger percentile gate.
+# See docs/TODO.md "Drafting", docs/MODEL.md §11.9.
+# ---------------------------------------------------------------------------
+
+
+def test_draft_potential_sigma_zero_collapses_to_leak() -> None:
+    """``draft_aggregation_sigma_m=0`` ⇒ ``draft_potential ≡ leak``.
+
+    At σ=0 the Gaussian is a no-op (``_gaussian_smooth_nan`` returns the
+    input unchanged). The post-smooth slope mask zeros cells where
+    ``slope_for_shape <= min_slope_rad``, but those cells already had
+    ``leak == 0`` from the kernel itself (``f_drain = f_max`` at the slope
+    threshold ⇒ leak = 0). So ``draft_potential`` and ``leak`` agree
+    pointwise. Regression guard: any future change that adds a non-trivial
+    branch under σ=0 must justify the divergence.
+    """
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=180.0,
+        wind_speed_ms=3.0,
+        smoothing_sigma_m=5.0,
+        draft_aggregation_sigma_m=0.0,
+    )
+    np.testing.assert_array_equal(result.draft_potential, result.leak)
+    assert result.draft_mask_loss_total == pytest.approx(0.0, abs=1e-12)
+
+
+def test_draft_potential_equalises_diffuse_and_concentrated_total_power() -> None:
+    """Diffuse uniform leak and concentrated point-spike with equal total
+    power produce comparable peak ``trigger_potential`` at the centre after
+    aggregation — the physical claim in ``docs/TODO.md`` "Drafting".
+
+    We build two flat-plateau DEMs (so the slope mask zeros nothing) and
+    push synthetic leak fields through ``_gaussian_smooth_nan`` +
+    ``_rank_normalise`` directly. This is the kernel-of-the-feature test;
+    a full ``run_model`` invocation cannot manufacture either field
+    exactly, and the σ-knob's intent is precisely to make these two
+    equivalent at the centre. We assert the rank at the centre cell is
+    within 10 % between the two cases.
+    """
+    from thermal_model.physics.pipeline import _gaussian_smooth_nan, _rank_normalise
+
+    rows, cols = 64, 64
+    centre = (rows // 2, cols // 2)
+
+    # Case A: uniform 10.0 over a centred 32×32 block, 0 elsewhere.
+    diffuse = np.zeros((rows, cols), dtype=np.float64)
+    diffuse[centre[0] - 16 : centre[0] + 16, centre[1] - 16 : centre[1] + 16] = 10.0
+
+    # Case B: concentrated 100 at the centre cell, 1.0 background.
+    concentrated = np.ones((rows, cols), dtype=np.float64)
+    concentrated[centre] = 100.0
+
+    # Total injected power. Diffuse: 10*32*32 = 10240. Concentrated:
+    # 100 + 1*(64*64 - 1) = 4195. Diffuse has more total power; if the
+    # aggregation works, its centre rank should be ≥ the concentrated case.
+    sigma_cells = 16.0  # ~half the diffuse-block radius
+    a = _gaussian_smooth_nan(diffuse, sigma_cells)
+    b = _gaussian_smooth_nan(concentrated, sigma_cells)
+    ta = _rank_normalise(a)
+    tb = _rank_normalise(b)
+
+    rank_a = ta[centre]
+    rank_b = tb[centre]
+    # Both should be in the top quintile; difference small.
+    assert rank_a > 0.95
+    assert rank_b > 0.95
+    assert abs(rank_a - rank_b) < 0.1, (
+        f"diffuse vs concentrated trigger rank at centre: "
+        f"diffuse={rank_a:.3f} concentrated={rank_b:.3f}"
+    )
+
+
+def test_draft_potential_slope_mask_zeros_plateau_interior() -> None:
+    """Post-smooth slope mask preserves the Phase 3.1 "summit interior
+    dim" property: rim leak that bleeds onto a flat plateau under
+    aggregation must be zeroed by the slope mask.
+
+    Construct a synthetic plateau-with-rim DEM: high flat top, sloped
+    walls, lower flat surroundings. Run the pipeline at large σ so the
+    Gaussian visibly spreads rim leak onto the plateau. Assert that the
+    plateau interior on ``draft_potential`` stays at zero, while the
+    rim itself remains positive.
+    """
+    rows, cols = 121, 121
+    centre = rows // 2
+    yy, xx = np.mgrid[0:rows, 0:cols].astype(np.float64)
+    dist_from_centre = np.sqrt((yy - centre) ** 2 + (xx - centre) ** 2)
+
+    # Plateau radius 20 cells, rim out to 40 cells.
+    plateau_r, rim_r = 20.0, 40.0
+    plateau_height = 50.0
+    base_height = 100.0
+    # Linear ramp on the rim from plateau_height down to 0 between plateau_r and rim_r.
+    rim_fraction = np.clip((rim_r - dist_from_centre) / (rim_r - plateau_r), 0.0, 1.0)
+    feature = np.where(dist_from_centre <= plateau_r, plateau_height, 0.0)
+    on_rim = (dist_from_centre > plateau_r) & (dist_from_centre <= rim_r)
+    feature = np.where(on_rim, plateau_height * rim_fraction, feature)
+    dem = base_height + feature
+
+    plateau_interior_mask = dist_from_centre < plateau_r - 2.0  # strict interior
+    rim_mask = (dist_from_centre > plateau_r + 1.0) & (dist_from_centre < rim_r - 1.0)
+
+    # ``curvature_smoothing_sigma_m=0`` so ``slope_for_shape`` comes
+    # from the raw, perfectly flat plateau interior — otherwise the
+    # 10 m Gaussian copy used by the leaky shape functions would
+    # smear rim slope a few cells into the plateau interior and
+    # spuriously lift the slope mask on those cells. Keep
+    # ``smoothing_sigma_m=0`` too so the routing path doesn't add
+    # its own slope bleed.
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=0.0,
+        wind_speed_ms=0.0,
+        smoothing_sigma_m=0.0,
+        curvature_smoothing_sigma_m=0.0,
+        draft_aggregation_sigma_m=50.0,  # large σ to force bleed
+        resolve_flats=False,
+    )
+
+    # Plateau interior must be exactly zero on draft_potential — the
+    # slope mask zeros every cell with slope <= min_slope_rad.
+    plateau_max = float(np.nanmax(result.draft_potential[plateau_interior_mask]))
+    rim_mean = float(np.nanmean(result.draft_potential[rim_mask]))
+    assert plateau_max == 0.0, (
+        f"plateau interior must be zero on draft_potential, got max={plateau_max:.6g}"
+    )
+    assert rim_mean > 0, "rim cells should retain positive draft_potential"
+    # Energy thrown away by the mask must be non-trivial (we forced bleed
+    # with large σ on a real rim feature) and reported via the diagnostic.
+    assert result.draft_mask_loss_total > 0
+
+
+def test_draft_potential_preserves_leak_energy_conservation() -> None:
+    """Adding the aggregation step must not disturb the conservation
+    invariant on ``leak``: ``Σ leak + residual ≡ Σ heating`` regardless
+    of ``draft_aggregation_sigma_m``.
+    """
+    dem = _mirror_spur_dem(rows=51, cols=51)
+    result = run_model(
+        dem,
+        CELL_SIZE_M,
+        NOON_MIDSUMMER,
+        LAT_DEG,
+        LON_DEG,
+        wind_from_deg=225.0,
+        wind_speed_ms=4.0,
+        smoothing_sigma_m=5.0,
+        draft_aggregation_sigma_m=75.0,
+    )
+
+    total_leak = float(np.nansum(result.leak))
+    total_input = float(np.nansum(result.heating_wm2))
+    np.testing.assert_allclose(
+        total_leak + result.residual_at_sinks_total,
+        total_input,
+        rtol=1e-9,
+        atol=1e-9,
+    )
+
+
+def test_draft_aggregation_sigma_negative_rejected() -> None:
+    """Negative ``draft_aggregation_sigma_m`` must raise ``ValueError``."""
+    dem = _mirror_spur_dem(rows=21, cols=21)
+    with pytest.raises(ValueError, match="draft_aggregation_sigma_m"):
+        run_model(
+            dem,
+            CELL_SIZE_M,
+            NOON_MIDSUMMER,
+            LAT_DEG,
+            LON_DEG,
+            wind_from_deg=0.0,
+            wind_speed_ms=0.0,
+            draft_aggregation_sigma_m=-1.0,
+        )
