@@ -182,6 +182,7 @@ Refreshed canonical no-wind midday panels at the new default σ:
 * `outputs/mallerstang_leak_5m_nowind_2026-05-09_1200.png`
 * `outputs/mallerstang_cycle_5m_nowind_2026-05-09_1200.png`
 
+
 The canonical SW-summer-afternoon (225° @ 6 m/s, 2026-07-15 13:00
 BST) Phase 3.1 visual gate above is **not** re-rendered in this
 addendum — that gate is unrelated to the speckle issue (the wind

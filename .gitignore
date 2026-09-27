@@ -41,7 +41,7 @@ htmlcov/
 
 # Project data — never commit raw or processed LIDAR
 data/raw/
-data/processed/
+# data/processed/
 data/cache/
 outputs/
 
